@@ -1,0 +1,15 @@
+Bonjour,
+Je m'appelle Karim, je suis propriétaire du Salon Yasmine, un salon de coiffure et esthétique à Annaba. On est 3 coiffeuses/coiffeurs qui travaillons ensemble.
+Mon problème actuellement :
+Les clients m'appellent toute la journée pour prendre rendez-vous, et je gère tout sur un cahier papier. Résultat : je me trompe souvent, il m'arrive de mettre deux clients à la même heure, ou d'avoir un créneau vide alors qu'une coiffeuse est disponible. C'est devenu ingérable.
+Ce dont j'ai besoin :
+Que le client puisse réserver lui-même depuis son téléphone, sans m'appeler, et voir en temps réel les créneaux disponibles
+Une vue d'ensemble pour moi : qui vient, à quelle heure, avec quelle coiffeuse
+Un planning séparé pour chaque coiffeuse (pas tout mélangé)
+Pouvoir ajouter ou modifier les services (coupe, brushing, coloration...), avec leur prix et leur durée
+Suivre les rendez-vous honorés et les no-shows (certains clients réservent et ne viennent pas)
+Avoir les coordonnées de chaque client (téléphone, email) pour pouvoir leur envoyer des promotions ou des rappels plus tard
+Questions importantes :
+Est-ce que le client peut réserver directement depuis son téléphone sans télécharger d'application ? J'ai peur que les clients plus âgés ne sachent pas installer une app.
+Le design doit être élégant — mon salon a une décoration haut de gamme, le site doit refléter ça.
+Combien de temps ça prendrait, et quel serait le tarif approximatif ?
