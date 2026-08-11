@@ -19,7 +19,8 @@ return new class extends Migration
             $table->dateTime('start_time');
             $table->dateTime('end_time');
             $table->decimal('total_price', 8, 2);
-            $table->string('status'); // pending, confirmed, completed, cancelled
+            $table->string('status')->default('confirmed'); //  confirmed, completed, cancelled, no-show
+            $table->index(['staff_id', 'start_time', 'end_time']);
             $table->timestamps();
         });
     }

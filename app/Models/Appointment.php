@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use App\Enums\AppointmentStatus;
 
 class Appointment extends Model
 {
@@ -37,6 +38,7 @@ class Appointment extends Model
             'start_time' => 'datetime',
             'end_time' => 'datetime',
             'total_price' => 'decimal:2',
+            'status' => AppointmentStatus::class,
         ];
     }
 
