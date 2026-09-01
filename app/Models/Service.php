@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -17,6 +18,8 @@ class Service extends Model
      */
     protected $fillable = [
         'name',
+        'description',
+        'photo',
         'base_price',
         'duration_minutes',
     ];
@@ -32,6 +35,20 @@ class Service extends Model
             'base_price' => 'decimal:2',
             'duration_minutes' => 'integer',
         ];
+    }
+
+    /**
+     * Resolve a usable photo URL whether `photo` is a full external
+     * URL (used for seeded placeholders) or a local storage path
+     * (used once real uploads exist).
+     */
+    protected function photoUrl(): Attribute
+    {
+        return Attribute::get(
+            fn() => str_starts_with($this->photo, 'http')
+                ? $this->photo
+                : asset('storage/' . $this->photo)
+        );
     }
 
     /**

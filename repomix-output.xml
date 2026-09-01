@@ -50,7 +50,8 @@ app/
         NewPasswordController.php
         PasswordController.php
         PasswordResetLinkController.php
-        RegisteredUserController.php
+      Booking/
+        BookingController.php
       Controller.php
       ProfileController.php
     Requests/
@@ -65,9 +66,12 @@ app/
     User.php
   Providers/
     AppServiceProvider.php
+  Services/
+    AvailabilityService.php
   View/
     Components/
       AppLayout.php
+      ClientLayout.php
       GuestLayout.php
 bootstrap/
   cache/
@@ -114,8 +118,14 @@ resources/
     auth/
       forgot-password.blade.php
       login.blade.php
-      register.blade.php
       reset-password.blade.php
+    booking/
+      confirmation.blade.php
+      my-appointments.blade.php
+      service.blade.php
+      slots.blade.php
+      staff.blade.php
+      start.blade.php
     components/
       auth-session-status.blade.php
       danger-button.blade.php
@@ -131,6 +141,7 @@ resources/
       text-input.blade.php
     layouts/
       app.blade.php
+      client.blade.php
       guest.blade.php
       navigation.blade.php
     profile/
@@ -140,7 +151,6 @@ resources/
         update-profile-information-form.blade.php
       edit.blade.php
     dashboard.blade.php
-    welcome.blade.php
 routes/
   auth.php
   console.php
@@ -172,7 +182,6 @@ tests/
       AuthenticationTest.php
       PasswordResetTest.php
       PasswordUpdateTest.php
-      RegistrationTest.php
     ExampleTest.php
     ProfileTest.php
   Unit/
@@ -198,6 +207,506 @@ vite.config.js
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="app/Services/AvailabilityService.php">
+<?php
+
+namespace App\Services;
+
+use App\Enums\AppointmentStatus;
+use App\Models\User;
+use Carbon\Carbon;
+
+class AvailabilityService
+{
+    /**
+     * Granularity of bookable start times, in minutes.
+     */
+    protected int $slotInterval = 30;
+
+    /**
+     * Get every bookable start time for a staff member, on a given date,
+     * for a service of the given duration.
+     *
+     * @return Carbon[]
+     */
+    public function slotsFor(User $staff, Carbon $date, int $serviceDurationMinutes): array
+    {
+        $schedule = $staff->staffSchedules()
+            ->where('day_of_week', $date->dayOfWeek)
+            ->first();
+
+        // No schedule row for this day at all = staff doesn't work this day.
+        if (! $schedule) {
+            return [];
+        }
+
+        $windowStart = Carbon::parse($date->toDateString() . ' ' . $schedule->start_time);
+        $windowEnd = Carbon::parse($date->toDateString() . ' ' . $schedule->end_time);
+
+        $busyRanges = $staff->staffAppointments()
+            ->whereDate('start_time', $date->toDateString())
+            ->where('status', '!=', AppointmentStatus::Cancelled->value)
+            ->orderBy('start_time')
+            ->get(['start_time', 'end_time']);
+
+        $freeGaps = $this->computeFreeGaps($windowStart, $windowEnd, $busyRanges);
+
+        return $this->generateSlots($freeGaps, $serviceDurationMinutes);
+    }
+
+    /**
+     * Given a working window and a list of busy ranges inside it,
+     * return the free ranges left over.
+     *
+     * @return array<array{0: Carbon, 1: Carbon}>
+     */
+    protected function computeFreeGaps(Carbon $windowStart, Carbon $windowEnd, $busyRanges): array
+    {
+        $gaps = [];
+        $cursor = $windowStart->copy();
+
+        foreach ($busyRanges as $busy) {
+            if ($busy->start_time->gt($cursor)) {
+                $gaps[] = [$cursor->copy(), $busy->start_time->copy()];
+            }
+
+            if ($busy->end_time->gt($cursor)) {
+                $cursor = $busy->end_time->copy();
+            }
+        }
+
+        if ($cursor->lt($windowEnd)) {
+            $gaps[] = [$cursor->copy(), $windowEnd->copy()];
+        }
+
+        return $gaps;
+    }
+
+    /**
+     * Turn free gaps into actual bookable start times, spaced by
+     * $slotInterval, only where the full service duration still fits.
+     *
+     * @return Carbon[]
+     */
+    protected function generateSlots(array $freeGaps, int $serviceDurationMinutes): array
+    {
+        $slots = [];
+
+        foreach ($freeGaps as [$gapStart, $gapEnd]) {
+            $slotStart = $gapStart->copy();
+
+            while ($slotStart->copy()->addMinutes($serviceDurationMinutes)->lte($gapEnd)) {
+                if ($slotStart->isFuture()) {
+                    $slots[] = $slotStart->copy();
+                }
+
+                $slotStart->addMinutes($this->slotInterval);
+            }
+        }
+
+        return $slots;
+    }
+}
+</file>
+
+<file path="app/View/Components/ClientLayout.php">
+<?php
+
+namespace App\View\Components;
+
+use Illuminate\View\Component;
+use Illuminate\View\View;
+
+class ClientLayout extends Component
+{
+    public function render(): View
+    {
+        return view('layouts.client');
+    }
+}
+</file>
+
+<file path="resources/views/booking/confirmation.blade.php">
+<x-client-layout>
+    <div class="max-w-md mx-auto px-4 pt-16 pb-16 text-center">
+
+        <div class="w-16 h-16 rounded-full bg-cyan-600 flex items-center justify-center mx-auto mb-6">
+            <svg class="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        </div>
+
+        <h1 class="text-2xl text-white mb-2" style="font-family:'Fraunces',serif;">You're booked!</h1>
+        <p class="text-white/60 text-sm mb-8">See you soon.</p>
+
+        <div class="bg-white rounded-2xl p-5 text-left space-y-2 text-sm">
+            <div class="flex justify-between">
+                <span class="text-slate-500">Service</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->service->name }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-slate-500">Stylist</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->staff->name }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-slate-500">When</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</span>
+            </div>
+            <div class="flex justify-between pt-2 border-t border-slate-100">
+                <span class="text-slate-700 font-medium">Total</span>
+                <span class="text-cyan-700 font-semibold">{{ number_format($appointment->total_price, 0) }} DA</span>
+            </div>
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/my-appointments.blade.php">
+<x-client-layout>
+    <div class="max-w-md mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Your appointment</h1>
+        <p class="text-sm text-white/50 mb-8">Upcoming bookings.</p>
+
+        @if (session('status'))
+        <p class="text-sm text-cyan-200 bg-cyan-900/30 border border-cyan-800 rounded-lg px-4 py-2 mb-6">
+            {{ session('status') }}
+        </p>
+        @endif
+
+        <div class="space-y-4">
+            @forelse ($appointments as $appointment)
+            <div class="bg-white rounded-2xl p-5 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)]">
+                <p class="font-medium text-slate-900">{{ $appointment->service->name }}</p>
+                <p class="text-sm text-slate-500">with {{ $appointment->staff->name }}</p>
+                <p class="text-sm text-slate-500 mt-1">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</p>
+
+                <form method="POST" action="{{ route('booking.appointment.cancel', $appointment) }}"
+                    onsubmit="return confirm('Cancel this appointment?')" class="mt-4">
+                    @csrf
+                    <button type="submit" class="text-sm text-red-600 hover:text-red-700 font-medium">
+                        Cancel appointment
+                    </button>
+                </form>
+            </div>
+            @empty
+            <p class="text-white/50 text-sm">You have no upcoming appointments.</p>
+            @endforelse
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/service.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-3xl lg:max-w-6xl mx-auto px-4 pt-10 pb-16 md:pt-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl md:text-4xl lg:text-5xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your service</h1>
+        <p class="text-sm md:text-base text-white/50 mb-8 md:mb-12">Tap Book on the one you'd like.</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            @foreach ($services as $service)
+            <div x-data="{ open: false }" class="relative bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] overflow-hidden">
+
+                <img src="{{ $service->photo_url }}" alt="{{ $service->name }}" class="w-full h-44 object-cover">
+
+                <div class="absolute left-4 top-44 bg-cyan-600 text-white text-sm font-semibold px-3 py-1.5 rounded-lg shadow-md" style="transform: translateY(-50%) rotate(-2deg);">
+                    {{ number_format($service->base_price, 0) }} DA
+                </div>
+
+                <div class="pt-5 px-5 pb-5">
+                    <h2 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">{{ $service->name }}</h2>
+                    <p class="text-sm text-slate-500 mt-1 leading-relaxed">{{ $service->description }}</p>
+
+                    <div class="flex items-center justify-between mt-4">
+                        <span class="text-xs text-slate-400">{{ $service->duration_minutes }} min</span>
+
+                        <button type="button" @click="open = true" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
+                            Book
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Addon panel, hidden until "Book" is tapped -->
+                <div x-show="open" x-cloak @click.self="open = false"
+                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
+                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
+
+                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Add anything extra?</h3>
+                        <p class="text-sm text-slate-500 mt-1 mb-4">Optional — skip if you just want the {{ $service->name }}.</p>
+
+                        <form method="POST" action="{{ route('booking.service.store') }}">
+                            @csrf
+                            <input type="hidden" name="service_id" value="{{ $service->id }}">
+
+                            <div class="space-y-3 mb-5">
+                                @forelse ($service->addons as $addon)
+                                <label class="flex items-center justify-between gap-3 cursor-pointer">
+                                    <span class="flex items-center gap-3">
+                                        <input type="checkbox" name="addon_ids[]" value="{{ $addon->id }}"
+                                            class="rounded border-slate-300 text-cyan-600 accent-cyan-600 focus:ring-cyan-500">
+                                        <span class="text-sm text-slate-700">{{ $addon->name }}</span>
+                                    </span>
+                                    <span class="text-sm text-slate-400">+{{ number_format($addon->extra_price, 0) }} DA</span>
+                                </label>
+                                @empty
+                                <p class="text-sm text-slate-400">No add-ons available for this service.</p>
+                                @endforelse
+                            </div>
+
+                            <div class="flex gap-2">
+                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
+                                    Continue
+                                </button>
+                            </div>
+                        </form>
+
+                    </div>
+                </div>
+
+            </div>
+            @endforeach
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/slots.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-2xl mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Pick a time</h1>
+        <p class="text-sm text-white/50 mb-6">With {{ $staff->name }}</p>
+
+        @if (session('error'))
+        <p class="text-sm text-red-300 bg-red-900/30 border border-red-800 rounded-lg px-4 py-2 mb-6">
+            {{ session('error') }}
+        </p>
+        @endif
+
+        <!-- Day picker -->
+        <div class="flex gap-2 overflow-x-auto pb-2 mb-6 -mx-4 px-4">
+            @foreach ($days as $day)
+            <a href="{{ route('booking.slots', ['date' => $day->toDateString()]) }}"
+                class="shrink-0 flex flex-col items-center justify-center w-14 h-16 rounded-xl
+                          {{ $day->isSameDay($selectedDate) ? 'bg-cyan-600 text-white' : 'bg-white/10 text-white/70' }}">
+                <span class="text-xs">{{ $day->format('D') }}</span>
+                <span class="text-lg font-semibold">{{ $day->format('d') }}</span>
+            </a>
+            @endforeach
+        </div>
+
+        <!-- Slots for the selected day -->
+        <div class="grid grid-cols-3 gap-3">
+            @forelse ($slots as $slot)
+            <div x-data="{ open: false }">
+                <button type="button" @click="open = true" class="w-full bg-white text-slate-900 text-sm font-medium py-3 rounded-xl shadow-sm hover:bg-cyan-50 transition">
+                    {{ $slot->format('H:i') }}
+                </button>
+
+                <!-- Confirmation panel for this specific slot -->
+                <div x-show="open" x-cloak @click.self="open = false"
+                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
+                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
+
+                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Confirm your booking</h3>
+
+                        <div class="mt-4 space-y-2 text-sm">
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Stylist</span>
+                                <span class="text-slate-900 font-medium">{{ $staff->name }}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Service</span>
+                                <span class="text-slate-900 font-medium">{{ $service->name }}</span>
+                            </div>
+                            @foreach ($addons as $addon)
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">+ {{ $addon->name }}</span>
+                                <span class="text-slate-900">{{ number_format($addon->extra_price, 0) }} DA</span>
+                            </div>
+                            @endforeach
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">When</span>
+                                <span class="text-slate-900 font-medium">{{ $selectedDate->format('D, M d') }} at {{ $slot->format('H:i') }}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Duration</span>
+                                <span class="text-slate-900">{{ $totalDuration }} min</span>
+                            </div>
+                            <div class="flex justify-between pt-2 border-t border-slate-100">
+                                <span class="text-slate-700 font-medium">Total</span>
+                                <span class="text-cyan-700 font-semibold">{{ number_format($totalPrice, 0) }} DA</span>
+                            </div>
+                        </div>
+
+                        <form method="POST" action="{{ route('booking.confirm') }}" class="mt-5">
+                            @csrf
+                            <input type="hidden" name="start_time" value="{{ $slot->toDateTimeString() }}">
+
+                            <div class="flex gap-2">
+                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
+                                    Book
+                                </button>
+                            </div>
+                        </form>
+
+                    </div>
+                </div>
+            </div>
+            @empty
+            <p class="col-span-3 text-white/50 text-sm">No availability this day.</p>
+            @endforelse
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/staff.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-3xl mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl md:text-4xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your stylist</h1>
+        <p class="text-sm text-white/50 mb-8">Pick who you'd like to see.</p>
+
+        <div class="space-y-4">
+            @foreach ($staff as $member)
+            <div class="bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] p-5 flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-cyan-100 text-cyan-700 font-semibold flex items-center justify-center" style="font-family:'Fraunces',serif;">
+                        {{ strtoupper(substr($member->name, 0, 1)) }}
+                    </div>
+                    <p class="font-medium text-slate-900">{{ $member->name }}</p>
+                </div>
+
+                <form method="POST" action="{{ route('booking.staff.store') }}">
+                    @csrf
+                    <input type="hidden" name="staff_id" value="{{ $member->id }}">
+                    <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
+                        Choose
+                    </button>
+                </form>
+            </div>
+            @endforeach
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/layouts/client.blade.php">
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{{ config('app.name', 'Laravel') }}</title>
+
+    <link rel="preconnect" href="https://fonts.bunny.net">
+    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
+
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+
+<body class="font-sans text-slate-800 antialiased" style="background-color:#072A2E;">
+
+    @if (session()->has('booking.client_id'))
+    {{-- Desktop top navbar --}}
+    <nav class="hidden md:block sticky top-0 z-40 backdrop-blur-xl bg-[#072A2E]/80 border-b border-white/10">
+        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+
+            <a href="{{ route('booking.service') }}" class="text-lg text-white tracking-tight" style="font-family:'Fraunces',serif;">
+                {{ config('app.name') }}
+            </a>
+
+            <div class="flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1">
+                <a href="{{ route('booking.service') }}"
+                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.service') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
+                    Services
+                </a>
+                <a href="{{ route('booking.my-appointments') }}"
+                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.my-appointments') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
+                    My Appointment
+                </a>
+            </div>
+
+            <form method="POST" action="{{ route('booking.logout') }}">
+                @csrf
+                <button type="submit" class="flex items-center gap-2 text-sm font-medium text-white/60 hover:text-red-400 transition">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                    </svg>
+                    Log out
+                </button>
+            </form>
+
+        </div>
+    </nav>
+    @endif
+
+    <div class="min-h-screen {{ session()->has('booking.client_id') ? 'pb-28 md:pb-0' : '' }}" style="background:radial-gradient(120% 60% at 50% 0%, rgba(103,232,249,0.14), transparent 60%);">
+
+        {{ $slot }}
+
+        @if (session()->has('booking.client_id'))
+        {{-- Mobile bottom nav --}}
+        <nav class="md:hidden fixed bottom-0 left-0 right-0 z-40 px-4" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1rem);">
+            <div class="max-w-md mx-auto bg-[#0A3338]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.5)] flex items-stretch overflow-hidden mt-4">
+
+                <a href="{{ route('booking.service') }}"
+                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.service') ? 'text-cyan-300' : 'text-white/40' }}">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1V9.5z" />
+                    </svg>
+                    <span class="text-[11px] font-medium">Services</span>
+                </a>
+
+                <a href="{{ route('booking.my-appointments') }}"
+                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.my-appointments') ? 'text-cyan-300' : 'text-white/40' }}">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <rect x="3" y="5" width="18" height="16" rx="2" />
+                        <path stroke-linecap="round" d="M8 3v4M16 3v4M3 10h18" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 14.5l2 2 4-4" />
+                    </svg>
+                    <span class="text-[11px] font-medium">Appointment</span>
+                </a>
+
+                <form method="POST" action="{{ route('booking.logout') }}" class="flex-1">
+                    @csrf
+                    <button type="submit" class="w-full h-full flex flex-col items-center gap-1 py-3 text-white/40 transition">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                        </svg>
+                        <span class="text-[11px] font-medium">Log out</span>
+                    </button>
+                </form>
+
+            </div>
+        </nav>
+        @endif
+
+    </div>
+</body>
+
+</html>
+</file>
 
 <file path="app/Enums/AppointmentStatus.php">
 <?php
@@ -409,57 +918,305 @@ class PasswordResetLinkController extends Controller
 }
 </file>
 
-<file path="app/Http/Controllers/Auth/RegisteredUserController.php">
+<file path="app/Http/Controllers/Booking/BookingController.php">
 <?php
 
-namespace App\Http\Controllers\Auth;
+namespace App\Http\Controllers\Booking;
 
+use App\Enums\AppointmentStatus;
 use App\Http\Controllers\Controller;
+use App\Models\Appointment;
+use App\Models\Service;
+use App\Models\ServiceAddon;
 use App\Models\User;
-use Illuminate\Auth\Events\Registered;
-use Illuminate\Http\RedirectResponse;
+use App\Services\AvailabilityService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rules;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
-class RegisteredUserController extends Controller
+class BookingController extends Controller
 {
-    /**
-     * Display the registration view.
-     */
     public function create(): View
     {
-        return view('auth.register');
+        return view('booking.start');
     }
 
-    /**
-     * Handle an incoming registration request.
-     *
-     * @throws ValidationException
-     */
     public function store(Request $request): RedirectResponse
     {
-        $request->validate([
+        $request->merge([
+            'phone' => preg_replace('/\s+/', '', (string) $request->input('phone')),
+        ]);
+
+        $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+            'phone' => ['required', 'string', 'regex:/^0[567][0-9]{8}$/'],
         ]);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
+        $client = User::firstOrCreate(
+            ['phone' => $validated['phone']],
+            ['name' => $validated['name']],
+        );
 
-        event(new Registered($user));
+        session(['booking.client_id' => $client->id]);
 
-        Auth::login($user);
-
-        return redirect(route('dashboard', absolute: false));
+        return redirect()->route('booking.service');
     }
+
+    public function selectService(): View|RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $services = Service::with('addons')->get();
+
+        return view('booking.service', ['services' => $services]);
+    }
+
+    public function storeService(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $validated = $request->validate([
+            'service_id' => ['required', 'exists:services,id'],
+            'addon_ids' => ['array'],
+            'addon_ids.*' => [
+                Rule::exists('service_addons', 'id')
+                    ->where('service_id', $request->input('service_id')),
+            ],
+        ]);
+
+        session([
+            'booking.service_id' => $validated['service_id'],
+            'booking.addon_ids' => $validated['addon_ids'] ?? [],
+        ]);
+
+        return redirect()->route('booking.staff');
+    }
+
+    public function selectStaff(): View|RedirectResponse
+    {
+        if (! session()->has('booking.service_id')) {
+            return redirect()->route('booking.service');
+        }
+
+        $staff = User::where('role', 'staff')->get();
+
+        return view('booking.staff', ['staff' => $staff]);
+    }
+
+    public function storeStaff(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.service_id')) {
+            return redirect()->route('booking.service');
+        }
+
+        $validated = $request->validate([
+            'staff_id' => ['required', Rule::exists('users', 'id')->where('role', 'staff')],
+        ]);
+
+        session(['booking.staff_id' => $validated['staff_id']]);
+
+        return redirect()->route('booking.slots');
+    }
+
+    public function selectSlot(Request $request): View|RedirectResponse
+    {
+        if (! session()->has('booking.staff_id')) {
+            return redirect()->route('booking.staff');
+        }
+
+        $staff = User::findOrFail(session('booking.staff_id'));
+        $service = Service::findOrFail(session('booking.service_id'));
+        $addonIds = session('booking.addon_ids', []);
+        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+
+        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
+        $totalPrice = $service->base_price + $addons->sum('extra_price');
+
+        $selectedDate = $request->query('date')
+            ? Carbon::parse($request->query('date'))
+            : Carbon::today();
+
+        $days = collect(range(0, 13))->map(
+            fn($i) => Carbon::today()->addDays($i)
+        );
+
+        $slots = app(AvailabilityService::class)->slotsFor($staff, $selectedDate, $totalDuration);
+
+        return view('booking.slots', [
+            'staff' => $staff,
+            'service' => $service,
+            'addons' => $addons,
+            'totalDuration' => $totalDuration,
+            'totalPrice' => $totalPrice,
+            'days' => $days,
+            'selectedDate' => $selectedDate,
+            'slots' => $slots,
+        ]);
+    }
+
+    public function storeAppointment(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.staff_id')) {
+            return redirect()->route('booking.staff');
+        }
+
+        $validated = $request->validate([
+            'start_time' => ['required', 'date'],
+        ]);
+
+        $clientId = session('booking.client_id');
+        $staffId = session('booking.staff_id');
+        $serviceId = session('booking.service_id');
+        $addonIds = session('booking.addon_ids', []);
+
+        $service = Service::findOrFail($serviceId);
+        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+
+        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
+        $totalPrice = $service->base_price + $addons->sum('extra_price');
+
+        $startTime = Carbon::parse($validated['start_time']);
+        $endTime = $startTime->copy()->addMinutes($totalDuration);
+
+        $appointment = DB::transaction(function () use (
+            $clientId,
+            $staffId,
+            $serviceId,
+            $startTime,
+            $endTime,
+            $totalPrice,
+            $totalDuration
+        ) {
+            $staff = User::where('id', $staffId)->where('role', 'staff')->firstOrFail();
+
+            // Re-run the availability engine, using the same rules the
+            // client saw when browsing — never trust the submitted
+            // start_time just because it matches the expected format.
+            $validSlots = app(AvailabilityService::class)
+                ->slotsFor($staff, $startTime->copy()->startOfDay(), $totalDuration);
+
+            $isLegitimateSlot = collect($validSlots)->contains(
+                fn($slot) => $slot->equalTo($startTime)
+            );
+
+            if (! $isLegitimateSlot) {
+                return null;
+            }
+
+            // Lock any of this staff member's appointments that day, so no
+            // other request can insert a conflicting one while we check.
+            $conflictExists = Appointment::where('staff_id', $staffId)
+                ->where('status', '!=', AppointmentStatus::Cancelled->value)
+                ->where('start_time', '<', $endTime)
+                ->where('end_time', '>', $startTime)
+                ->lockForUpdate()
+                ->exists();
+
+            if ($conflictExists) {
+                return null;
+            }
+
+            return Appointment::create([
+                'client_id' => $clientId,
+                'staff_id' => $staffId,
+                'service_id' => $serviceId,
+                'start_time' => $startTime,
+                'end_time' => $endTime,
+                'total_price' => $totalPrice,
+                'status' => AppointmentStatus::Confirmed->value,
+            ]);
+        });
+
+        if (! $appointment) {
+            return redirect()->route('booking.slots')
+                ->with('error', 'That slot is no longer available — please pick another.');
+        }
+
+        $appointment->addons()->attach($addonIds);
+
+        // Client identity persists across bookings — only the
+        // choices specific to this one booking get cleared.
+        session()->forget([
+            'booking.service_id',
+            'booking.addon_ids',
+            'booking.staff_id',
+        ]);
+
+        session(['booking.confirmed_id' => $appointment->id]);
+
+        return redirect()->route('booking.confirmation');
+    }
+
+    public function confirmation(): View|RedirectResponse
+    {
+        if (! session()->has('booking.confirmed_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $appointment = Appointment::with(['service', 'staff'])
+            ->findOrFail(session()->pull('booking.confirmed_id'));
+
+        return view('booking.confirmation', ['appointment' => $appointment]);
+    }
+
+    public function myAppointments(): View|RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $appointments = Appointment::with(['service', 'staff'])
+            ->where('client_id', session('booking.client_id'))
+            ->where('status', AppointmentStatus::Confirmed->value)
+            ->where('start_time', '>=', now())
+            ->orderBy('start_time')
+            ->get();
+
+        return view('booking.my-appointments', ['appointments' => $appointments]);
+    }
+
+    public function cancelAppointment(Appointment $appointment): RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        // Ownership check — a client can only cancel their own
+        // appointment, never one referenced by guessing an ID.
+        if ($appointment->client_id !== session('booking.client_id')) {
+            abort(403);
+        }
+
+        $appointment->update(['status' => AppointmentStatus::Cancelled->value]);
+
+        return redirect()->route('booking.my-appointments')
+            ->with('status', 'Appointment cancelled.');
+    }
+
+    public function logout(): RedirectResponse
+    {
+        session()->forget('booking.client_id');
+
+        return redirect()->route('booking.start');
+    }
+}
+</file>
+
+<file path="app/Http/Controllers/Controller.php">
+<?php
+
+namespace App\Http\Controllers;
+
+abstract class Controller
+{
+    //
 }
 </file>
 
@@ -649,1330 +1406,12 @@ class ProfileUpdateRequest extends FormRequest
 }
 </file>
 
-<file path="app/View/Components/AppLayout.php">
-<?php
-
-namespace App\View\Components;
-
-use Illuminate\View\Component;
-use Illuminate\View\View;
-
-class AppLayout extends Component
-{
-    /**
-     * Get the view / contents that represents the component.
-     */
-    public function render(): View
-    {
-        return view('layouts.app');
-    }
-}
-</file>
-
-<file path="app/View/Components/GuestLayout.php">
-<?php
-
-namespace App\View\Components;
-
-use Illuminate\View\Component;
-use Illuminate\View\View;
-
-class GuestLayout extends Component
-{
-    /**
-     * Get the view / contents that represents the component.
-     */
-    public function render(): View
-    {
-        return view('layouts.guest');
-    }
-}
-</file>
-
-<file path="resources/views/auth/forgot-password.blade.php">
-<x-guest-layout>
-    <div class="mb-6">
-        <h1 class="text-xl font-semibold text-slate-900">Reset your password</h1>
-        <p class="mt-1 text-sm text-slate-500">Enter your email and we'll send you a link to choose a new one.</p>
-    </div>
-
-    <x-auth-session-status class="mb-4" :status="session('status')" />
-
-    <form method="POST" action="{{ route('password.email') }}">
-        @csrf
-
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" type="email" name="email" :value="old('email')" required autofocus autocomplete="email" />
-            <x-input-error :messages="$errors->get('email')" />
-        </div>
-
-        <div class="flex items-center justify-between mt-6">
-            <a class="text-sm text-cyan-700 hover:text-cyan-800 underline underline-offset-2" href="{{ route('login') }}">
-                {{ __('Back to sign in') }}
-            </a>
-
-            <x-primary-button>
-                {{ __('Send reset link') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
-</file>
-
-<file path="resources/views/auth/login.blade.php">
-<x-guest-layout>
-    <div class="mb-6">
-        <h1 class="text-xl font-semibold text-slate-900">Sign in</h1>
-        <p class="mt-1 text-sm text-slate-500">Access your schedule and appointments.</p>
-    </div>
-
-    <x-auth-session-status class="mb-4" :status="session('status')" />
-
-    <form method="POST" action="{{ route('login') }}">
-        @csrf
-
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" type="email" name="email" :value="old('email')" required autofocus autocomplete="email" />
-            <x-input-error :messages="$errors->get('email')" />
-        </div>
-
-        <!-- Password -->
-        <div class="mt-4">
-            <x-input-label for="password" :value="__('Password')" />
-            <x-text-input id="password"
-                type="password"
-                name="password"
-                required autocomplete="current-password" />
-            <x-input-error :messages="$errors->get('password')" />
-        </div>
-
-        <!-- Remember Me -->
-        <div class="block mt-4">
-            <label for="remember_me" class="inline-flex items-center">
-                <input id="remember_me" type="checkbox" class="rounded border-slate-300 text-cyan-600 accent-cyan-600 focus:ring-cyan-500" name="remember">
-                <span class="ms-2 text-sm text-slate-600">{{ __('Remember me') }}</span>
-            </label>
-        </div>
-
-        <div class="flex items-center justify-between mt-6">
-            @if (Route::has('password.request'))
-            <a class="text-sm text-cyan-700 hover:text-cyan-800 underline underline-offset-2" href="{{ route('password.request') }}">
-                {{ __('Forgot your password?') }}
-            </a>
-            @endif
-
-            <x-primary-button>
-                {{ __('Log in') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
-</file>
-
-<file path="resources/views/auth/register.blade.php">
-<x-guest-layout>
-    <form method="POST" action="{{ route('register') }}">
-        @csrf
-
-        <!-- Name -->
-        <div>
-            <x-input-label for="name" :value="__('Name')" />
-            <x-text-input id="name" class="block mt-1 w-full" type="text" name="name" :value="old('name')" required autofocus autocomplete="name" />
-            <x-input-error :messages="$errors->get('name')" class="mt-2" />
-        </div>
-
-        <!-- Email Address -->
-        <div class="mt-4">
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" class="block mt-1 w-full" type="email" name="email" :value="old('email')" required autocomplete="username" />
-            <x-input-error :messages="$errors->get('email')" class="mt-2" />
-        </div>
-
-        <!-- Password -->
-        <div class="mt-4">
-            <x-input-label for="password" :value="__('Password')" />
-
-            <x-text-input id="password" class="block mt-1 w-full"
-                            type="password"
-                            name="password"
-                            required autocomplete="new-password" />
-
-            <x-input-error :messages="$errors->get('password')" class="mt-2" />
-        </div>
-
-        <!-- Confirm Password -->
-        <div class="mt-4">
-            <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
-
-            <x-text-input id="password_confirmation" class="block mt-1 w-full"
-                            type="password"
-                            name="password_confirmation" required autocomplete="new-password" />
-
-            <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
-        </div>
-
-        <div class="flex items-center justify-end mt-4">
-            <a class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" href="{{ route('login') }}">
-                {{ __('Already registered?') }}
-            </a>
-
-            <x-primary-button class="ms-4">
-                {{ __('Register') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
-</file>
-
-<file path="resources/views/auth/reset-password.blade.php">
-<x-guest-layout>
-    <div class="mb-6">
-        <h1 class="text-xl font-semibold text-slate-900">Choose a new password</h1>
-        <p class="mt-1 text-sm text-slate-500">Make it something you haven't used before.</p>
-    </div>
-
-    <form method="POST" action="{{ route('password.store') }}">
-        @csrf
-
-        <!-- Password Reset Token -->
-        <input type="hidden" name="token" value="{{ $request->route('token') }}">
-
-        <!-- Email Address -->
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" type="email" name="email" :value="old('email', $request->email)" required autofocus autocomplete="username" />
-            <x-input-error :messages="$errors->get('email')" />
-        </div>
-
-        <!-- Password -->
-        <div class="mt-4">
-            <x-input-label for="password" :value="__('New password')" />
-            <x-text-input id="password" type="password" name="password" required autocomplete="new-password" />
-            <x-input-error :messages="$errors->get('password')" />
-        </div>
-
-        <!-- Confirm Password -->
-        <div class="mt-4">
-            <x-input-label for="password_confirmation" :value="__('Confirm new password')" />
-            <x-text-input id="password_confirmation" type="password" name="password_confirmation" required autocomplete="new-password" />
-            <x-input-error :messages="$errors->get('password_confirmation')" />
-        </div>
-
-        <div class="flex items-center justify-end mt-6">
-            <x-primary-button>
-                {{ __('Reset password') }}
-            </x-primary-button>
-        </div>
-    </form>
-</x-guest-layout>
-</file>
-
-<file path="resources/views/components/auth-session-status.blade.php">
-@props(['status'])
-
-@if ($status)
-    <div {{ $attributes->merge(['class' => 'font-medium text-sm text-green-600']) }}>
-        {{ $status }}
-    </div>
-@endif
-</file>
-
-<file path="resources/views/components/danger-button.blade.php">
-<button {{ $attributes->merge(['type' => 'submit', 'class' => 'inline-flex items-center px-4 py-2 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-500 active:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150']) }}>
-    {{ $slot }}
-</button>
-</file>
-
-<file path="resources/views/components/dropdown-link.blade.php">
-<a {{ $attributes->merge(['class' => 'block w-full px-4 py-2 text-start text-sm leading-5 text-gray-700 hover:bg-gray-100 focus:outline-none focus:bg-gray-100 transition duration-150 ease-in-out']) }}>{{ $slot }}</a>
-</file>
-
-<file path="resources/views/components/dropdown.blade.php">
-@props(['align' => 'right', 'width' => '48', 'contentClasses' => 'py-1 bg-white'])
-
-@php
-$alignmentClasses = match ($align) {
-    'left' => 'ltr:origin-top-left rtl:origin-top-right start-0',
-    'top' => 'origin-top',
-    default => 'ltr:origin-top-right rtl:origin-top-left end-0',
-};
-
-$width = match ($width) {
-    '48' => 'w-48',
-    default => $width,
-};
-@endphp
-
-<div class="relative" x-data="{ open: false }" @click.outside="open = false" @close.stop="open = false">
-    <div @click="open = ! open">
-        {{ $trigger }}
-    </div>
-
-    <div x-show="open"
-            x-transition:enter="transition ease-out duration-200"
-            x-transition:enter-start="opacity-0 scale-95"
-            x-transition:enter-end="opacity-100 scale-100"
-            x-transition:leave="transition ease-in duration-75"
-            x-transition:leave-start="opacity-100 scale-100"
-            x-transition:leave-end="opacity-0 scale-95"
-            class="absolute z-50 mt-2 {{ $width }} rounded-md shadow-lg {{ $alignmentClasses }}"
-            style="display: none;"
-            @click="open = false">
-        <div class="rounded-md ring-1 ring-black ring-opacity-5 {{ $contentClasses }}">
-            {{ $content }}
-        </div>
-    </div>
-</div>
-</file>
-
-<file path="resources/views/components/input-error.blade.php">
-@props(['messages'])
-
-@if ($messages)
-<ul {{ $attributes->merge(['class' => 'mt-1.5 text-sm text-red-600 space-y-1']) }}>
-    @foreach ((array) $messages as $message)
-    <li>{{ $message }}</li>
-    @endforeach
-</ul>
-@endif
-</file>
-
-<file path="resources/views/components/input-label.blade.php">
-@props(['value'])
-
-<label {{ $attributes->merge(['class' => 'block text-sm font-medium text-slate-700 mb-1.5']) }}>
-    {{ $value ?? $slot }}
-</label>
-</file>
-
-<file path="resources/views/components/modal.blade.php">
-@props([
-    'name',
-    'show' => false,
-    'maxWidth' => '2xl'
-])
-
-@php
-$maxWidth = [
-    'sm' => 'sm:max-w-sm',
-    'md' => 'sm:max-w-md',
-    'lg' => 'sm:max-w-lg',
-    'xl' => 'sm:max-w-xl',
-    '2xl' => 'sm:max-w-2xl',
-][$maxWidth];
-@endphp
-
-<div
-    x-data="{
-        show: @js($show),
-        focusables() {
-            // All focusable element types...
-            let selector = 'a, button, input:not([type=\'hidden\']), textarea, select, details, [tabindex]:not([tabindex=\'-1\'])'
-            return [...$el.querySelectorAll(selector)]
-                // All non-disabled elements...
-                .filter(el => ! el.hasAttribute('disabled'))
-        },
-        firstFocusable() { return this.focusables()[0] },
-        lastFocusable() { return this.focusables().slice(-1)[0] },
-        nextFocusable() { return this.focusables()[this.nextFocusableIndex()] || this.firstFocusable() },
-        prevFocusable() { return this.focusables()[this.prevFocusableIndex()] || this.lastFocusable() },
-        nextFocusableIndex() { return (this.focusables().indexOf(document.activeElement) + 1) % (this.focusables().length + 1) },
-        prevFocusableIndex() { return Math.max(0, this.focusables().indexOf(document.activeElement)) -1 },
-    }"
-    x-init="$watch('show', value => {
-        if (value) {
-            document.body.classList.add('overflow-y-hidden');
-            {{ $attributes->has('focusable') ? 'setTimeout(() => firstFocusable().focus(), 100)' : '' }}
-        } else {
-            document.body.classList.remove('overflow-y-hidden');
-        }
-    })"
-    x-on:open-modal.window="$event.detail == '{{ $name }}' ? show = true : null"
-    x-on:close-modal.window="$event.detail == '{{ $name }}' ? show = false : null"
-    x-on:close.stop="show = false"
-    x-on:keydown.escape.window="show = false"
-    x-on:keydown.tab.prevent="$event.shiftKey || nextFocusable().focus()"
-    x-on:keydown.shift.tab.prevent="prevFocusable().focus()"
-    x-show="show"
-    class="fixed inset-0 overflow-y-auto px-4 py-6 sm:px-0 z-50"
-    style="display: {{ $show ? 'block' : 'none' }};"
->
-    <div
-        x-show="show"
-        class="fixed inset-0 transform transition-all"
-        x-on:click="show = false"
-        x-transition:enter="ease-out duration-300"
-        x-transition:enter-start="opacity-0"
-        x-transition:enter-end="opacity-100"
-        x-transition:leave="ease-in duration-200"
-        x-transition:leave-start="opacity-100"
-        x-transition:leave-end="opacity-0"
-    >
-        <div class="absolute inset-0 bg-gray-500 opacity-75"></div>
-    </div>
-
-    <div
-        x-show="show"
-        class="mb-6 bg-white rounded-lg overflow-hidden shadow-xl transform transition-all sm:w-full {{ $maxWidth }} sm:mx-auto"
-        x-transition:enter="ease-out duration-300"
-        x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
-        x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
-        x-transition:leave="ease-in duration-200"
-        x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
-        x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
-    >
-        {{ $slot }}
-    </div>
-</div>
-</file>
-
-<file path="resources/views/components/nav-link.blade.php">
-@props(['active'])
-
-@php
-$classes = ($active ?? false)
-            ? 'inline-flex items-center px-1 pt-1 border-b-2 border-indigo-400 text-sm font-medium leading-5 text-gray-900 focus:outline-none focus:border-indigo-700 transition duration-150 ease-in-out'
-            : 'inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium leading-5 text-gray-500 hover:text-gray-700 hover:border-gray-300 focus:outline-none focus:text-gray-700 focus:border-gray-300 transition duration-150 ease-in-out';
-@endphp
-
-<a {{ $attributes->merge(['class' => $classes]) }}>
-    {{ $slot }}
-</a>
-</file>
-
-<file path="resources/views/components/primary-button.blade.php">
-<button {{ $attributes->merge(['type' => 'submit', 'class' => 'inline-flex items-center justify-center px-5 py-2.5 bg-cyan-600 border border-transparent rounded-xl font-semibold text-sm text-white shadow-sm transition hover:bg-cyan-700 focus:outline-none focus:ring-4 focus:ring-cyan-500/30 active:bg-cyan-800']) }}>
-    {{ $slot }}
-</button>
-</file>
-
-<file path="resources/views/components/responsive-nav-link.blade.php">
-@props(['active'])
-
-@php
-$classes = ($active ?? false)
-            ? 'block w-full ps-3 pe-4 py-2 border-l-4 border-indigo-400 text-start text-base font-medium text-indigo-700 bg-indigo-50 focus:outline-none focus:text-indigo-800 focus:bg-indigo-100 focus:border-indigo-700 transition duration-150 ease-in-out'
-            : 'block w-full ps-3 pe-4 py-2 border-l-4 border-transparent text-start text-base font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-50 hover:border-gray-300 focus:outline-none focus:text-gray-800 focus:bg-gray-50 focus:border-gray-300 transition duration-150 ease-in-out';
-@endphp
-
-<a {{ $attributes->merge(['class' => $classes]) }}>
-    {{ $slot }}
-</a>
-</file>
-
-<file path="resources/views/components/secondary-button.blade.php">
-<button {{ $attributes->merge(['type' => 'button', 'class' => 'inline-flex items-center px-4 py-2 bg-white border border-gray-300 rounded-md font-semibold text-xs text-gray-700 uppercase tracking-widest shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-25 transition ease-in-out duration-150']) }}>
-    {{ $slot }}
-</button>
-</file>
-
-<file path="resources/views/components/text-input.blade.php">
-@props(['disabled' => false])
-
-<input @disabled($disabled) {{ $attributes->merge(['class' => 'w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 shadow-sm transition focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400']) }}>
-</file>
-
-<file path="resources/views/layouts/app.blade.php">
-<!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta name="csrf-token" content="{{ csrf_token() }}">
-
-        <title>{{ config('app.name', 'Laravel') }}</title>
-
-        <!-- Fonts -->
-        <link rel="preconnect" href="https://fonts.bunny.net">
-        <link href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap" rel="stylesheet" />
-
-        <!-- Scripts -->
-        @vite(['resources/css/app.css', 'resources/js/app.js'])
-    </head>
-    <body class="font-sans antialiased">
-        <div class="min-h-screen bg-gray-100">
-            @include('layouts.navigation')
-
-            <!-- Page Heading -->
-            @isset($header)
-                <header class="bg-white shadow">
-                    <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                        {{ $header }}
-                    </div>
-                </header>
-            @endisset
-
-            <!-- Page Content -->
-            <main>
-                {{ $slot }}
-            </main>
-        </div>
-    </body>
-</html>
-</file>
-
-<file path="resources/views/layouts/guest.blade.php">
-<!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
-
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
-
-    <title>{{ config('app.name', 'Laravel') }}</title>
-
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.bunny.net">
-    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
-
-    <!-- Scripts -->
-    @vite(['resources/css/app.css', 'resources/js/app.js'])
-</head>
-
-<body class="font-sans text-slate-800 antialiased">
-    <div class="min-h-screen flex flex-col justify-center items-center px-4 py-10 bg-gradient-to-b from-cyan-50 via-white to-white">
-
-        <a href="/" class="mb-8 flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-cyan-500"></span>
-            <span class="text-xl tracking-tight text-slate-900" style="font-family: 'Fraunces', serif;">
-                {{ config('app.name', 'Laravel') }}
-            </span>
-        </a>
-
-        <div class="w-full sm:max-w-md px-6 py-8 sm:px-8 bg-white border border-cyan-100 rounded-2xl shadow-[0_8px_30px_-12px_rgba(8,145,178,0.25)]">
-            {{ $slot }}
-        </div>
-
-    </div>
-</body>
-
-</html>
-</file>
-
-<file path="resources/views/layouts/navigation.blade.php">
-<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
-    <!-- Primary Navigation Menu -->
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between h-16">
-            <div class="flex">
-                <!-- Logo -->
-                <div class="shrink-0 flex items-center">
-                    <a href="{{ route('dashboard') }}">
-                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
-                    </a>
-                </div>
-
-                <!-- Navigation Links -->
-                <div class="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
-                    <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                        {{ __('Dashboard') }}
-                    </x-nav-link>
-                </div>
-            </div>
-
-            <!-- Settings Dropdown -->
-            <div class="hidden sm:flex sm:items-center sm:ms-6">
-                <x-dropdown align="right" width="48">
-                    <x-slot name="trigger">
-                        <button class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-gray-500 bg-white hover:text-gray-700 focus:outline-none transition ease-in-out duration-150">
-                            <div>{{ Auth::user()->name }}</div>
-
-                            <div class="ms-1">
-                                <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
-                                </svg>
-                            </div>
-                        </button>
-                    </x-slot>
-
-                    <x-slot name="content">
-                        <x-dropdown-link :href="route('profile.edit')">
-                            {{ __('Profile') }}
-                        </x-dropdown-link>
-
-                        <!-- Authentication -->
-                        <form method="POST" action="{{ route('logout') }}">
-                            @csrf
-
-                            <x-dropdown-link :href="route('logout')"
-                                    onclick="event.preventDefault();
-                                                this.closest('form').submit();">
-                                {{ __('Log Out') }}
-                            </x-dropdown-link>
-                        </form>
-                    </x-slot>
-                </x-dropdown>
-            </div>
-
-            <!-- Hamburger -->
-            <div class="-me-2 flex items-center sm:hidden">
-                <button @click="open = ! open" class="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:bg-gray-100 focus:text-gray-500 transition duration-150 ease-in-out">
-                    <svg class="h-6 w-6" stroke="currentColor" fill="none" viewBox="0 0 24 24">
-                        <path :class="{'hidden': open, 'inline-flex': ! open }" class="inline-flex" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                        <path :class="{'hidden': ! open, 'inline-flex': open }" class="hidden" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Responsive Navigation Menu -->
-    <div :class="{'block': open, 'hidden': ! open}" class="hidden sm:hidden">
-        <div class="pt-2 pb-3 space-y-1">
-            <x-responsive-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
-                {{ __('Dashboard') }}
-            </x-responsive-nav-link>
-        </div>
-
-        <!-- Responsive Settings Options -->
-        <div class="pt-4 pb-1 border-t border-gray-200">
-            <div class="px-4">
-                <div class="font-medium text-base text-gray-800">{{ Auth::user()->name }}</div>
-                <div class="font-medium text-sm text-gray-500">{{ Auth::user()->email }}</div>
-            </div>
-
-            <div class="mt-3 space-y-1">
-                <x-responsive-nav-link :href="route('profile.edit')">
-                    {{ __('Profile') }}
-                </x-responsive-nav-link>
-
-                <!-- Authentication -->
-                <form method="POST" action="{{ route('logout') }}">
-                    @csrf
-
-                    <x-responsive-nav-link :href="route('logout')"
-                            onclick="event.preventDefault();
-                                        this.closest('form').submit();">
-                        {{ __('Log Out') }}
-                    </x-responsive-nav-link>
-                </form>
-            </div>
-        </div>
-    </div>
-</nav>
-</file>
-
-<file path="resources/views/profile/partials/delete-user-form.blade.php">
-<section class="space-y-6">
-    <header>
-        <h2 class="text-lg font-medium text-gray-900">
-            {{ __('Delete Account') }}
-        </h2>
-
-        <p class="mt-1 text-sm text-gray-600">
-            {{ __('Once your account is deleted, all of its resources and data will be permanently deleted. Before deleting your account, please download any data or information that you wish to retain.') }}
-        </p>
-    </header>
-
-    <x-danger-button
-        x-data=""
-        x-on:click.prevent="$dispatch('open-modal', 'confirm-user-deletion')"
-    >{{ __('Delete Account') }}</x-danger-button>
-
-    <x-modal name="confirm-user-deletion" :show="$errors->userDeletion->isNotEmpty()" focusable>
-        <form method="post" action="{{ route('profile.destroy') }}" class="p-6">
-            @csrf
-            @method('delete')
-
-            <h2 class="text-lg font-medium text-gray-900">
-                {{ __('Are you sure you want to delete your account?') }}
-            </h2>
-
-            <p class="mt-1 text-sm text-gray-600">
-                {{ __('Once your account is deleted, all of its resources and data will be permanently deleted. Please enter your password to confirm you would like to permanently delete your account.') }}
-            </p>
-
-            <div class="mt-6">
-                <x-input-label for="password" value="{{ __('Password') }}" class="sr-only" />
-
-                <x-text-input
-                    id="password"
-                    name="password"
-                    type="password"
-                    class="mt-1 block w-3/4"
-                    placeholder="{{ __('Password') }}"
-                />
-
-                <x-input-error :messages="$errors->userDeletion->get('password')" class="mt-2" />
-            </div>
-
-            <div class="mt-6 flex justify-end">
-                <x-secondary-button x-on:click="$dispatch('close')">
-                    {{ __('Cancel') }}
-                </x-secondary-button>
-
-                <x-danger-button class="ms-3">
-                    {{ __('Delete Account') }}
-                </x-danger-button>
-            </div>
-        </form>
-    </x-modal>
-</section>
-</file>
-
-<file path="resources/views/profile/partials/update-password-form.blade.php">
-<section>
-    <header>
-        <h2 class="text-lg font-medium text-gray-900">
-            {{ __('Update Password') }}
-        </h2>
-
-        <p class="mt-1 text-sm text-gray-600">
-            {{ __('Ensure your account is using a long, random password to stay secure.') }}
-        </p>
-    </header>
-
-    <form method="post" action="{{ route('password.update') }}" class="mt-6 space-y-6">
-        @csrf
-        @method('put')
-
-        <div>
-            <x-input-label for="update_password_current_password" :value="__('Current Password')" />
-            <x-text-input id="update_password_current_password" name="current_password" type="password" class="mt-1 block w-full" autocomplete="current-password" />
-            <x-input-error :messages="$errors->updatePassword->get('current_password')" class="mt-2" />
-        </div>
-
-        <div>
-            <x-input-label for="update_password_password" :value="__('New Password')" />
-            <x-text-input id="update_password_password" name="password" type="password" class="mt-1 block w-full" autocomplete="new-password" />
-            <x-input-error :messages="$errors->updatePassword->get('password')" class="mt-2" />
-        </div>
-
-        <div>
-            <x-input-label for="update_password_password_confirmation" :value="__('Confirm Password')" />
-            <x-text-input id="update_password_password_confirmation" name="password_confirmation" type="password" class="mt-1 block w-full" autocomplete="new-password" />
-            <x-input-error :messages="$errors->updatePassword->get('password_confirmation')" class="mt-2" />
-        </div>
-
-        <div class="flex items-center gap-4">
-            <x-primary-button>{{ __('Save') }}</x-primary-button>
-
-            @if (session('status') === 'password-updated')
-                <p
-                    x-data="{ show: true }"
-                    x-show="show"
-                    x-transition
-                    x-init="setTimeout(() => show = false, 2000)"
-                    class="text-sm text-gray-600"
-                >{{ __('Saved.') }}</p>
-            @endif
-        </div>
-    </form>
-</section>
-</file>
-
-<file path="resources/views/profile/partials/update-profile-information-form.blade.php">
-<section>
-    <header>
-        <h2 class="text-lg font-medium text-gray-900">
-            {{ __('Profile Information') }}
-        </h2>
-
-        <p class="mt-1 text-sm text-gray-600">
-            {{ __("Update your account's profile information and email address.") }}
-        </p>
-    </header>
-
-    <form id="send-verification" method="post" action="{{ route('verification.send') }}">
-        @csrf
-    </form>
-
-    <form method="post" action="{{ route('profile.update') }}" class="mt-6 space-y-6">
-        @csrf
-        @method('patch')
-
-        <div>
-            <x-input-label for="name" :value="__('Name')" />
-            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full" :value="old('name', $user->name)" required autofocus autocomplete="name" />
-            <x-input-error class="mt-2" :messages="$errors->get('name')" />
-        </div>
-
-        <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full" :value="old('email', $user->email)" required autocomplete="username" />
-            <x-input-error class="mt-2" :messages="$errors->get('email')" />
-
-            @if ($user instanceof \Illuminate\Contracts\Auth\MustVerifyEmail && ! $user->hasVerifiedEmail())
-                <div>
-                    <p class="text-sm mt-2 text-gray-800">
-                        {{ __('Your email address is unverified.') }}
-
-                        <button form="send-verification" class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            {{ __('Click here to re-send the verification email.') }}
-                        </button>
-                    </p>
-
-                    @if (session('status') === 'verification-link-sent')
-                        <p class="mt-2 font-medium text-sm text-green-600">
-                            {{ __('A new verification link has been sent to your email address.') }}
-                        </p>
-                    @endif
-                </div>
-            @endif
-        </div>
-
-        <div class="flex items-center gap-4">
-            <x-primary-button>{{ __('Save') }}</x-primary-button>
-
-            @if (session('status') === 'profile-updated')
-                <p
-                    x-data="{ show: true }"
-                    x-show="show"
-                    x-transition
-                    x-init="setTimeout(() => show = false, 2000)"
-                    class="text-sm text-gray-600"
-                >{{ __('Saved.') }}</p>
-            @endif
-        </div>
-    </form>
-</section>
-</file>
-
-<file path="resources/views/profile/edit.blade.php">
-<x-app-layout>
-    <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Profile') }}
-        </h2>
-    </x-slot>
-
-    <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
-                <div class="max-w-xl">
-                    @include('profile.partials.update-profile-information-form')
-                </div>
-            </div>
-
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
-                <div class="max-w-xl">
-                    @include('profile.partials.update-password-form')
-                </div>
-            </div>
-
-            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
-                <div class="max-w-xl">
-                    @include('profile.partials.delete-user-form')
-                </div>
-            </div>
-        </div>
-    </div>
-</x-app-layout>
-</file>
-
-<file path="resources/views/dashboard.blade.php">
-<x-app-layout>
-    <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Dashboard') }}
-        </h2>
-    </x-slot>
-
-    <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                <div class="p-6 text-gray-900">
-                    {{ __("You're logged in!") }}
-                </div>
-            </div>
-        </div>
-    </div>
-</x-app-layout>
-</file>
-
-<file path="routes/auth.php">
-<?php
-
-use App\Http\Controllers\Auth\AuthenticatedSessionController;
-use App\Http\Controllers\Auth\NewPasswordController;
-use App\Http\Controllers\Auth\PasswordController;
-use App\Http\Controllers\Auth\PasswordResetLinkController;
-use Illuminate\Support\Facades\Route;
-
-Route::middleware('guest')->group(function () {
-
-    Route::get('login', [AuthenticatedSessionController::class, 'create'])
-        ->name('login');
-
-    Route::post('login', [AuthenticatedSessionController::class, 'store']);
-
-    Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
-        ->name('password.request');
-
-    Route::post('forgot-password', [PasswordResetLinkController::class, 'store'])
-        ->name('password.email');
-
-    Route::get('reset-password/{token}', [NewPasswordController::class, 'create'])
-        ->name('password.reset');
-
-    Route::post('reset-password', [NewPasswordController::class, 'store'])
-        ->name('password.store');
-});
-
-Route::middleware('auth')->group(function () {
-    Route::put('password', [PasswordController::class, 'update'])->name('password.update');
-
-    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])
-        ->name('logout');
-});
-</file>
-
-<file path="tests/Feature/Auth/AuthenticationTest.php">
-<?php
-
-namespace Tests\Feature\Auth;
-
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\TestCase;
-
-class AuthenticationTest extends TestCase
-{
-    use RefreshDatabase;
-
-    public function test_login_screen_can_be_rendered(): void
-    {
-        $response = $this->get('/login');
-
-        $response->assertStatus(200);
-    }
-
-    public function test_users_can_authenticate_using_the_login_screen(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this->post('/login', [
-            'email' => $user->email,
-            'password' => 'password',
-        ]);
-
-        $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
-    }
-
-    public function test_users_can_not_authenticate_with_invalid_password(): void
-    {
-        $user = User::factory()->create();
-
-        $this->post('/login', [
-            'email' => $user->email,
-            'password' => 'wrong-password',
-        ]);
-
-        $this->assertGuest();
-    }
-
-    public function test_users_can_logout(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this->actingAs($user)->post('/logout');
-
-        $this->assertGuest();
-        $response->assertRedirect('/');
-    }
-}
-</file>
-
-<file path="tests/Feature/Auth/PasswordResetTest.php">
-<?php
-
-namespace Tests\Feature\Auth;
-
-use App\Models\User;
-use Illuminate\Auth\Notifications\ResetPassword;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Notification;
-use Tests\TestCase;
-
-class PasswordResetTest extends TestCase
-{
-    use RefreshDatabase;
-
-    public function test_reset_password_link_screen_can_be_rendered(): void
-    {
-        $response = $this->get('/forgot-password');
-
-        $response->assertStatus(200);
-    }
-
-    public function test_reset_password_link_can_be_requested(): void
-    {
-        Notification::fake();
-
-        $user = User::factory()->create();
-
-        $this->post('/forgot-password', ['email' => $user->email]);
-
-        Notification::assertSentTo($user, ResetPassword::class);
-    }
-
-    public function test_reset_password_screen_can_be_rendered(): void
-    {
-        Notification::fake();
-
-        $user = User::factory()->create();
-
-        $this->post('/forgot-password', ['email' => $user->email]);
-
-        Notification::assertSentTo($user, ResetPassword::class, function ($notification) {
-            $response = $this->get('/reset-password/'.$notification->token);
-
-            $response->assertStatus(200);
-
-            return true;
-        });
-    }
-
-    public function test_password_can_be_reset_with_valid_token(): void
-    {
-        Notification::fake();
-
-        $user = User::factory()->create();
-
-        $this->post('/forgot-password', ['email' => $user->email]);
-
-        Notification::assertSentTo($user, ResetPassword::class, function ($notification) use ($user) {
-            $response = $this->post('/reset-password', [
-                'token' => $notification->token,
-                'email' => $user->email,
-                'password' => 'password',
-                'password_confirmation' => 'password',
-            ]);
-
-            $response
-                ->assertSessionHasNoErrors()
-                ->assertRedirect(route('login'));
-
-            return true;
-        });
-    }
-}
-</file>
-
-<file path="tests/Feature/Auth/PasswordUpdateTest.php">
-<?php
-
-namespace Tests\Feature\Auth;
-
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Hash;
-use Tests\TestCase;
-
-class PasswordUpdateTest extends TestCase
-{
-    use RefreshDatabase;
-
-    public function test_password_can_be_updated(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->from('/profile')
-            ->put('/password', [
-                'current_password' => 'password',
-                'password' => 'new-password',
-                'password_confirmation' => 'new-password',
-            ]);
-
-        $response
-            ->assertSessionHasNoErrors()
-            ->assertRedirect('/profile');
-
-        $this->assertTrue(Hash::check('new-password', $user->refresh()->password));
-    }
-
-    public function test_correct_password_must_be_provided_to_update_password(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->from('/profile')
-            ->put('/password', [
-                'current_password' => 'wrong-password',
-                'password' => 'new-password',
-                'password_confirmation' => 'new-password',
-            ]);
-
-        $response
-            ->assertSessionHasErrorsIn('updatePassword', 'current_password')
-            ->assertRedirect('/profile');
-    }
-}
-</file>
-
-<file path="tests/Feature/Auth/RegistrationTest.php">
-<?php
-
-namespace Tests\Feature\Auth;
-
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\TestCase;
-
-class RegistrationTest extends TestCase
-{
-    use RefreshDatabase;
-
-    public function test_registration_screen_can_be_rendered(): void
-    {
-        $response = $this->get('/register');
-
-        $response->assertStatus(200);
-    }
-
-    public function test_new_users_can_register(): void
-    {
-        $response = $this->post('/register', [
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-            'password' => 'password',
-            'password_confirmation' => 'password',
-        ]);
-
-        $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
-    }
-}
-</file>
-
-<file path="tests/Feature/ProfileTest.php">
-<?php
-
-namespace Tests\Feature;
-
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\TestCase;
-
-class ProfileTest extends TestCase
-{
-    use RefreshDatabase;
-
-    public function test_profile_page_is_displayed(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->get('/profile');
-
-        $response->assertOk();
-    }
-
-    public function test_profile_information_can_be_updated(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->patch('/profile', [
-                'name' => 'Test User',
-                'email' => 'test@example.com',
-            ]);
-
-        $response
-            ->assertSessionHasNoErrors()
-            ->assertRedirect('/profile');
-
-        $user->refresh();
-
-        $this->assertSame('Test User', $user->name);
-        $this->assertSame('test@example.com', $user->email);
-        $this->assertNull($user->email_verified_at);
-    }
-
-    public function test_email_verification_status_is_unchanged_when_the_email_address_is_unchanged(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->patch('/profile', [
-                'name' => 'Test User',
-                'email' => $user->email,
-            ]);
-
-        $response
-            ->assertSessionHasNoErrors()
-            ->assertRedirect('/profile');
-
-        $this->assertNotNull($user->refresh()->email_verified_at);
-    }
-
-    public function test_user_can_delete_their_account(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->delete('/profile', [
-                'password' => 'password',
-            ]);
-
-        $response
-            ->assertSessionHasNoErrors()
-            ->assertRedirect('/');
-
-        $this->assertGuest();
-        $this->assertNull($user->fresh());
-    }
-
-    public function test_correct_password_must_be_provided_to_delete_account(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this
-            ->actingAs($user)
-            ->from('/profile')
-            ->delete('/profile', [
-                'password' => 'wrong-password',
-            ]);
-
-        $response
-            ->assertSessionHasErrorsIn('userDeletion', 'password')
-            ->assertRedirect('/profile');
-
-        $this->assertNotNull($user->fresh());
-    }
-}
-</file>
-
-<file path="postcss.config.js">
-export default {
-    plugins: {
-        tailwindcss: {},
-        autoprefixer: {},
-    },
-};
-</file>
-
-<file path="tailwind.config.js">
-import defaultTheme from 'tailwindcss/defaultTheme';
-import forms from '@tailwindcss/forms';
-
-/** @type {import('tailwindcss').Config} */
-export default {
-    content: [
-        './vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php',
-        './storage/framework/views/*.php',
-        './resources/views/**/*.blade.php',
-    ],
-
-    theme: {
-        extend: {
-            fontFamily: {
-                sans: ['Figtree', ...defaultTheme.fontFamily.sans],
-            },
-        },
-    },
-
-    plugins: [forms],
-};
-</file>
-
-<file path="app/Http/Controllers/Controller.php">
-<?php
-
-namespace App\Http\Controllers;
-
-abstract class Controller
-{
-    //
-}
-</file>
-
-<file path="app/Models/Appointment.php">
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use App\Enums\AppointmentStatus;
-
-class Appointment extends Model
-{
-    use HasFactory;
-
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $fillable = [
-        'client_id',
-        'staff_id',
-        'service_id',
-        'start_time',
-        'end_time',
-        'total_price',
-        'status',
-    ];
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'start_time' => 'datetime',
-            'end_time' => 'datetime',
-            'total_price' => 'decimal:2',
-            'status' => AppointmentStatus::class,
-        ];
-    }
-
-    /**
-     * Get the client for the appointment.
-     */
-    public function client(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'client_id');
-    }
-
-    /**
-     * Get the staff member assigned to the appointment.
-     */
-    public function staff(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'staff_id');
-    }
-
-    /**
-     * Get the service booked in the appointment.
-     */
-    public function service(): BelongsTo
-    {
-        return $this->belongsTo(Service::class);
-    }
-
-    /**
-     * Get the addons included in the appointment.
-     */
-    public function addons(): BelongsToMany
-    {
-        return $this->belongsToMany(ServiceAddon::class, 'appointment_addon');
-    }
-}
-</file>
-
 <file path="app/Models/Service.php">
 <?php
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -1988,6 +1427,8 @@ class Service extends Model
      */
     protected $fillable = [
         'name',
+        'description',
+        'photo',
         'base_price',
         'duration_minutes',
     ];
@@ -2003,6 +1444,20 @@ class Service extends Model
             'base_price' => 'decimal:2',
             'duration_minutes' => 'integer',
         ];
+    }
+
+    /**
+     * Resolve a usable photo URL whether `photo` is a full external
+     * URL (used for seeded placeholders) or a local storage path
+     * (used once real uploads exist).
+     */
+    protected function photoUrl(): Attribute
+    {
+        return Attribute::get(
+            fn() => str_starts_with($this->photo, 'http')
+                ? $this->photo
+                : asset('storage/' . $this->photo)
+        );
     }
 
     /**
@@ -2157,6 +1612,46 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         //
+    }
+}
+</file>
+
+<file path="app/View/Components/AppLayout.php">
+<?php
+
+namespace App\View\Components;
+
+use Illuminate\View\Component;
+use Illuminate\View\View;
+
+class AppLayout extends Component
+{
+    /**
+     * Get the view / contents that represents the component.
+     */
+    public function render(): View
+    {
+        return view('layouts.app');
+    }
+}
+</file>
+
+<file path="app/View/Components/GuestLayout.php">
+<?php
+
+namespace App\View\Components;
+
+use Illuminate\View\Component;
+use Illuminate\View\View;
+
+class GuestLayout extends Component
+{
+    /**
+     * Get the view / contents that represents the component.
+     */
+    public function render(): View
+    {
+        return view('layouts.guest');
     }
 }
 </file>
@@ -3640,6 +3135,8 @@ return new class extends Migration
         Schema::create('services', function (Blueprint $table) {
             $table->id();
             $table->string('name');
+            $table->text('description')->nullable();
+            $table->string('photo');
             $table->decimal('base_price', 8, 2);
             $table->integer('duration_minutes');
             $table->timestamps();
@@ -3723,44 +3220,6 @@ return new class extends Migration
 };
 </file>
 
-<file path="database/migrations/2026_07_26_013804_create_appointments_table.php">
-<?php
-
-use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
-
-return new class extends Migration
-{
-    /**
-     * Run the migrations.
-     */
-    public function up(): void
-    {
-        Schema::create('appointments', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('client_id')->constrained('users')->cascadeOnDelete();
-            $table->foreignId('staff_id')->constrained('users')->cascadeOnDelete();
-            $table->foreignId('service_id')->constrained('services')->cascadeOnDelete();
-            $table->dateTime('start_time');
-            $table->dateTime('end_time');
-            $table->decimal('total_price', 8, 2);
-            $table->string('status')->default('confirmed'); //  confirmed, completed, cancelled, no-show
-            $table->index(['staff_id', 'start_time', 'end_time']);
-            $table->timestamps();
-        });
-    }
-
-    /**
-     * Reverse the migrations.
-     */
-    public function down(): void
-    {
-        Schema::dropIfExists('appointments');
-    }
-};
-</file>
-
 <file path="database/migrations/2026_07_26_013805_create_appointment_addon_table.php">
 <?php
 
@@ -3790,35 +3249,6 @@ return new class extends Migration
         Schema::dropIfExists('appointment_addon');
     }
 };
-</file>
-
-<file path="database/seeders/DatabaseSeeder.php">
-<?php
-
-namespace Database\Seeders;
-
-use App\Models\User;
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
-use Illuminate\Database\Seeder;
-
-class DatabaseSeeder extends Seeder
-{
-    use WithoutModelEvents;
-
-    /**
-     * Seed the application's database.
-     */
-    public function run(): void
-    {
-        // User::factory(10)->create();
-
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-            'role' => 'admin',
-        ]);
-    }
-}
 </file>
 
 <file path="database/.gitignore">
@@ -3881,18 +3311,815 @@ User-agent: *
 Disallow:
 </file>
 
-<file path="resources/css/app.css">
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+<file path="resources/views/auth/forgot-password.blade.php">
+<x-guest-layout>
+    <div class="mb-6">
+        <h1 class="text-xl font-semibold text-slate-900">Reset your password</h1>
+        <p class="mt-1 text-sm text-slate-500">Enter your email and we'll send you a link to choose a new one.</p>
+    </div>
+
+    <x-auth-session-status class="mb-4" :status="session('status')" />
+
+    <form method="POST" action="{{ route('password.email') }}">
+        @csrf
+
+        <!-- Email Address -->
+        <div>
+            <x-input-label for="email" :value="__('Email')" />
+            <x-text-input id="email" type="email" name="email" :value="old('email')" required autofocus autocomplete="email" />
+            <x-input-error :messages="$errors->get('email')" />
+        </div>
+
+        <div class="flex items-center justify-between mt-6">
+            <a class="text-sm text-cyan-700 hover:text-cyan-800 underline underline-offset-2" href="{{ route('login') }}">
+                {{ __('Back to sign in') }}
+            </a>
+
+            <x-primary-button>
+                {{ __('Send reset link') }}
+            </x-primary-button>
+        </div>
+    </form>
+</x-guest-layout>
 </file>
 
-<file path="resources/js/app.js">
-import Alpine from 'alpinejs';
+<file path="resources/views/auth/login.blade.php">
+<x-guest-layout>
+    <div class="mb-6">
+        <h1 class="text-xl font-semibold text-slate-900">Sign in</h1>
+        <p class="mt-1 text-sm text-slate-500">Access your schedule and appointments.</p>
+    </div>
 
-window.Alpine = Alpine;
+    <x-auth-session-status class="mb-4" :status="session('status')" />
 
-Alpine.start();
+    <form method="POST" action="{{ route('login') }}">
+        @csrf
+
+        <!-- Email Address -->
+        <div>
+            <x-input-label for="email" :value="__('Email')" />
+            <x-text-input id="email" type="email" name="email" :value="old('email')" required autofocus autocomplete="email" />
+            <x-input-error :messages="$errors->get('email')" />
+        </div>
+
+        <!-- Password -->
+        <div class="mt-4">
+            <x-input-label for="password" :value="__('Password')" />
+            <x-text-input id="password"
+                type="password"
+                name="password"
+                required autocomplete="current-password" />
+            <x-input-error :messages="$errors->get('password')" />
+        </div>
+
+        <!-- Remember Me -->
+        <div class="block mt-4">
+            <label for="remember_me" class="inline-flex items-center">
+                <input id="remember_me" type="checkbox" class="rounded border-slate-300 text-cyan-600 accent-cyan-600 focus:ring-cyan-500" name="remember">
+                <span class="ms-2 text-sm text-slate-600">{{ __('Remember me') }}</span>
+            </label>
+        </div>
+
+        <div class="flex items-center justify-between mt-6">
+            @if (Route::has('password.request'))
+            <a class="text-sm text-cyan-700 hover:text-cyan-800 underline underline-offset-2" href="{{ route('password.request') }}">
+                {{ __('Forgot your password?') }}
+            </a>
+            @endif
+
+            <x-primary-button>
+                {{ __('Log in') }}
+            </x-primary-button>
+        </div>
+    </form>
+</x-guest-layout>
+</file>
+
+<file path="resources/views/auth/reset-password.blade.php">
+<x-guest-layout>
+    <div class="mb-6">
+        <h1 class="text-xl font-semibold text-slate-900">Choose a new password</h1>
+        <p class="mt-1 text-sm text-slate-500">Make it something you haven't used before.</p>
+    </div>
+
+    <form method="POST" action="{{ route('password.store') }}">
+        @csrf
+
+        <!-- Password Reset Token -->
+        <input type="hidden" name="token" value="{{ $request->route('token') }}">
+
+        <!-- Email Address -->
+        <div>
+            <x-input-label for="email" :value="__('Email')" />
+            <x-text-input id="email" type="email" name="email" :value="old('email', $request->email)" required autofocus autocomplete="username" />
+            <x-input-error :messages="$errors->get('email')" />
+        </div>
+
+        <!-- Password -->
+        <div class="mt-4">
+            <x-input-label for="password" :value="__('New password')" />
+            <x-text-input id="password" type="password" name="password" required autocomplete="new-password" />
+            <x-input-error :messages="$errors->get('password')" />
+        </div>
+
+        <!-- Confirm Password -->
+        <div class="mt-4">
+            <x-input-label for="password_confirmation" :value="__('Confirm new password')" />
+            <x-text-input id="password_confirmation" type="password" name="password_confirmation" required autocomplete="new-password" />
+            <x-input-error :messages="$errors->get('password_confirmation')" />
+        </div>
+
+        <div class="flex items-center justify-end mt-6">
+            <x-primary-button>
+                {{ __('Reset password') }}
+            </x-primary-button>
+        </div>
+    </form>
+</x-guest-layout>
+</file>
+
+<file path="resources/views/booking/start.blade.php">
+<x-guest-layout>
+    <div class="mb-6">
+        <h1 class="text-xl font-semibold text-slate-900">Let's get you booked</h1>
+        <p class="mt-1 text-sm text-slate-500">Just your name and number to get started.</p>
+    </div>
+
+    <form method="POST" action="{{ route('booking.store') }}">
+        @csrf
+
+        <!-- Name -->
+        <div>
+            <x-input-label for="name" value="Full name" />
+            <x-text-input id="name" type="text" name="name" :value="old('name')" required autofocus autocomplete="name" />
+            <x-input-error :messages="$errors->get('name')" />
+        </div>
+
+        <!-- Phone -->
+        <div class="mt-4">
+            <x-input-label for="phone" value="Phone number" />
+            <x-text-input id="phone" type="tel" name="phone" :value="old('phone')" required autocomplete="tel" placeholder="0555 12 34 56" />
+            <x-input-error :messages="$errors->get('phone')" />
+        </div>
+
+        <div class="mt-6">
+            <x-primary-button class="w-full justify-center">
+                Continue
+            </x-primary-button>
+        </div>
+    </form>
+</x-guest-layout>
+</file>
+
+<file path="resources/views/components/auth-session-status.blade.php">
+@props(['status'])
+
+@if ($status)
+    <div {{ $attributes->merge(['class' => 'font-medium text-sm text-green-600']) }}>
+        {{ $status }}
+    </div>
+@endif
+</file>
+
+<file path="resources/views/components/danger-button.blade.php">
+<button {{ $attributes->merge(['type' => 'submit', 'class' => 'inline-flex items-center px-4 py-2 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-500 active:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150']) }}>
+    {{ $slot }}
+</button>
+</file>
+
+<file path="resources/views/components/dropdown-link.blade.php">
+<a {{ $attributes->merge(['class' => 'block w-full px-4 py-2 text-start text-sm leading-5 text-gray-700 hover:bg-gray-100 focus:outline-none focus:bg-gray-100 transition duration-150 ease-in-out']) }}>{{ $slot }}</a>
+</file>
+
+<file path="resources/views/components/dropdown.blade.php">
+@props(['align' => 'right', 'width' => '48', 'contentClasses' => 'py-1 bg-white'])
+
+@php
+$alignmentClasses = match ($align) {
+    'left' => 'ltr:origin-top-left rtl:origin-top-right start-0',
+    'top' => 'origin-top',
+    default => 'ltr:origin-top-right rtl:origin-top-left end-0',
+};
+
+$width = match ($width) {
+    '48' => 'w-48',
+    default => $width,
+};
+@endphp
+
+<div class="relative" x-data="{ open: false }" @click.outside="open = false" @close.stop="open = false">
+    <div @click="open = ! open">
+        {{ $trigger }}
+    </div>
+
+    <div x-show="open"
+            x-transition:enter="transition ease-out duration-200"
+            x-transition:enter-start="opacity-0 scale-95"
+            x-transition:enter-end="opacity-100 scale-100"
+            x-transition:leave="transition ease-in duration-75"
+            x-transition:leave-start="opacity-100 scale-100"
+            x-transition:leave-end="opacity-0 scale-95"
+            class="absolute z-50 mt-2 {{ $width }} rounded-md shadow-lg {{ $alignmentClasses }}"
+            style="display: none;"
+            @click="open = false">
+        <div class="rounded-md ring-1 ring-black ring-opacity-5 {{ $contentClasses }}">
+            {{ $content }}
+        </div>
+    </div>
+</div>
+</file>
+
+<file path="resources/views/components/input-error.blade.php">
+@props(['messages'])
+
+@if ($messages)
+<ul {{ $attributes->merge(['class' => 'mt-1.5 text-sm text-red-600 space-y-1']) }}>
+    @foreach ((array) $messages as $message)
+    <li>{{ $message }}</li>
+    @endforeach
+</ul>
+@endif
+</file>
+
+<file path="resources/views/components/input-label.blade.php">
+@props(['value'])
+
+<label {{ $attributes->merge(['class' => 'block text-sm font-medium text-slate-700 mb-1.5']) }}>
+    {{ $value ?? $slot }}
+</label>
+</file>
+
+<file path="resources/views/components/modal.blade.php">
+@props([
+    'name',
+    'show' => false,
+    'maxWidth' => '2xl'
+])
+
+@php
+$maxWidth = [
+    'sm' => 'sm:max-w-sm',
+    'md' => 'sm:max-w-md',
+    'lg' => 'sm:max-w-lg',
+    'xl' => 'sm:max-w-xl',
+    '2xl' => 'sm:max-w-2xl',
+][$maxWidth];
+@endphp
+
+<div
+    x-data="{
+        show: @js($show),
+        focusables() {
+            // All focusable element types...
+            let selector = 'a, button, input:not([type=\'hidden\']), textarea, select, details, [tabindex]:not([tabindex=\'-1\'])'
+            return [...$el.querySelectorAll(selector)]
+                // All non-disabled elements...
+                .filter(el => ! el.hasAttribute('disabled'))
+        },
+        firstFocusable() { return this.focusables()[0] },
+        lastFocusable() { return this.focusables().slice(-1)[0] },
+        nextFocusable() { return this.focusables()[this.nextFocusableIndex()] || this.firstFocusable() },
+        prevFocusable() { return this.focusables()[this.prevFocusableIndex()] || this.lastFocusable() },
+        nextFocusableIndex() { return (this.focusables().indexOf(document.activeElement) + 1) % (this.focusables().length + 1) },
+        prevFocusableIndex() { return Math.max(0, this.focusables().indexOf(document.activeElement)) -1 },
+    }"
+    x-init="$watch('show', value => {
+        if (value) {
+            document.body.classList.add('overflow-y-hidden');
+            {{ $attributes->has('focusable') ? 'setTimeout(() => firstFocusable().focus(), 100)' : '' }}
+        } else {
+            document.body.classList.remove('overflow-y-hidden');
+        }
+    })"
+    x-on:open-modal.window="$event.detail == '{{ $name }}' ? show = true : null"
+    x-on:close-modal.window="$event.detail == '{{ $name }}' ? show = false : null"
+    x-on:close.stop="show = false"
+    x-on:keydown.escape.window="show = false"
+    x-on:keydown.tab.prevent="$event.shiftKey || nextFocusable().focus()"
+    x-on:keydown.shift.tab.prevent="prevFocusable().focus()"
+    x-show="show"
+    class="fixed inset-0 overflow-y-auto px-4 py-6 sm:px-0 z-50"
+    style="display: {{ $show ? 'block' : 'none' }};"
+>
+    <div
+        x-show="show"
+        class="fixed inset-0 transform transition-all"
+        x-on:click="show = false"
+        x-transition:enter="ease-out duration-300"
+        x-transition:enter-start="opacity-0"
+        x-transition:enter-end="opacity-100"
+        x-transition:leave="ease-in duration-200"
+        x-transition:leave-start="opacity-100"
+        x-transition:leave-end="opacity-0"
+    >
+        <div class="absolute inset-0 bg-gray-500 opacity-75"></div>
+    </div>
+
+    <div
+        x-show="show"
+        class="mb-6 bg-white rounded-lg overflow-hidden shadow-xl transform transition-all sm:w-full {{ $maxWidth }} sm:mx-auto"
+        x-transition:enter="ease-out duration-300"
+        x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+        x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+        x-transition:leave="ease-in duration-200"
+        x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
+        x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+    >
+        {{ $slot }}
+    </div>
+</div>
+</file>
+
+<file path="resources/views/components/nav-link.blade.php">
+@props(['active'])
+
+@php
+$classes = ($active ?? false)
+            ? 'inline-flex items-center px-1 pt-1 border-b-2 border-indigo-400 text-sm font-medium leading-5 text-gray-900 focus:outline-none focus:border-indigo-700 transition duration-150 ease-in-out'
+            : 'inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium leading-5 text-gray-500 hover:text-gray-700 hover:border-gray-300 focus:outline-none focus:text-gray-700 focus:border-gray-300 transition duration-150 ease-in-out';
+@endphp
+
+<a {{ $attributes->merge(['class' => $classes]) }}>
+    {{ $slot }}
+</a>
+</file>
+
+<file path="resources/views/components/primary-button.blade.php">
+<button {{ $attributes->merge(['type' => 'submit', 'class' => 'inline-flex items-center justify-center px-5 py-2.5 bg-cyan-600 border border-transparent rounded-xl font-semibold text-sm text-white shadow-sm transition hover:bg-cyan-700 focus:outline-none focus:ring-4 focus:ring-cyan-500/30 active:bg-cyan-800']) }}>
+    {{ $slot }}
+</button>
+</file>
+
+<file path="resources/views/components/responsive-nav-link.blade.php">
+@props(['active'])
+
+@php
+$classes = ($active ?? false)
+            ? 'block w-full ps-3 pe-4 py-2 border-l-4 border-indigo-400 text-start text-base font-medium text-indigo-700 bg-indigo-50 focus:outline-none focus:text-indigo-800 focus:bg-indigo-100 focus:border-indigo-700 transition duration-150 ease-in-out'
+            : 'block w-full ps-3 pe-4 py-2 border-l-4 border-transparent text-start text-base font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-50 hover:border-gray-300 focus:outline-none focus:text-gray-800 focus:bg-gray-50 focus:border-gray-300 transition duration-150 ease-in-out';
+@endphp
+
+<a {{ $attributes->merge(['class' => $classes]) }}>
+    {{ $slot }}
+</a>
+</file>
+
+<file path="resources/views/components/secondary-button.blade.php">
+<button {{ $attributes->merge(['type' => 'button', 'class' => 'inline-flex items-center px-4 py-2 bg-white border border-gray-300 rounded-md font-semibold text-xs text-gray-700 uppercase tracking-widest shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-25 transition ease-in-out duration-150']) }}>
+    {{ $slot }}
+</button>
+</file>
+
+<file path="resources/views/components/text-input.blade.php">
+@props(['disabled' => false])
+
+<input @disabled($disabled) {{ $attributes->merge(['class' => 'w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 placeholder-slate-400 shadow-sm transition focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400']) }}>
+</file>
+
+<file path="resources/views/layouts/app.blade.php">
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="csrf-token" content="{{ csrf_token() }}">
+
+        <title>{{ config('app.name', 'Laravel') }}</title>
+
+        <!-- Fonts -->
+        <link rel="preconnect" href="https://fonts.bunny.net">
+        <link href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap" rel="stylesheet" />
+
+        <!-- Scripts -->
+        @vite(['resources/css/app.css', 'resources/js/app.js'])
+    </head>
+    <body class="font-sans antialiased">
+        <div class="min-h-screen bg-gray-100">
+            @include('layouts.navigation')
+
+            <!-- Page Heading -->
+            @isset($header)
+                <header class="bg-white shadow">
+                    <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                        {{ $header }}
+                    </div>
+                </header>
+            @endisset
+
+            <!-- Page Content -->
+            <main>
+                {{ $slot }}
+            </main>
+        </div>
+    </body>
+</html>
+</file>
+
+<file path="resources/views/layouts/guest.blade.php">
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+
+    <title>{{ config('app.name', 'Laravel') }}</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.bunny.net">
+    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
+
+    <!-- Scripts -->
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+
+<body class="font-sans text-slate-800 antialiased">
+    <div class="min-h-screen flex flex-col justify-center items-center px-4 py-10 bg-gradient-to-b from-cyan-50 via-white to-white">
+
+        <a href="/" class="mb-8 flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-cyan-500"></span>
+            <span class="text-xl tracking-tight text-slate-900" style="font-family: 'Fraunces', serif;">
+                {{ config('app.name', 'Laravel') }}
+            </span>
+        </a>
+
+        <div class="w-full sm:max-w-md px-6 py-8 sm:px-8 bg-white border border-cyan-100 rounded-2xl shadow-[0_8px_30px_-12px_rgba(8,145,178,0.25)]">
+            {{ $slot }}
+        </div>
+
+    </div>
+</body>
+
+</html>
+</file>
+
+<file path="resources/views/layouts/navigation.blade.php">
+<nav x-data="{ open: false }" class="bg-white border-b border-gray-100">
+    <!-- Primary Navigation Menu -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-16">
+            <div class="flex">
+                <!-- Logo -->
+                <div class="shrink-0 flex items-center">
+                    <a href="{{ route('dashboard') }}">
+                        <x-application-logo class="block h-9 w-auto fill-current text-gray-800" />
+                    </a>
+                </div>
+
+                <!-- Navigation Links -->
+                <div class="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
+                    <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
+                        {{ __('Dashboard') }}
+                    </x-nav-link>
+                </div>
+            </div>
+
+            <!-- Settings Dropdown -->
+            <div class="hidden sm:flex sm:items-center sm:ms-6">
+                <x-dropdown align="right" width="48">
+                    <x-slot name="trigger">
+                        <button class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-gray-500 bg-white hover:text-gray-700 focus:outline-none transition ease-in-out duration-150">
+                            <div>{{ Auth::user()->name }}</div>
+
+                            <div class="ms-1">
+                                <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                        </button>
+                    </x-slot>
+
+                    <x-slot name="content">
+                        <x-dropdown-link :href="route('profile.edit')">
+                            {{ __('Profile') }}
+                        </x-dropdown-link>
+
+                        <!-- Authentication -->
+                        <form method="POST" action="{{ route('logout') }}">
+                            @csrf
+
+                            <x-dropdown-link :href="route('logout')"
+                                    onclick="event.preventDefault();
+                                                this.closest('form').submit();">
+                                {{ __('Log Out') }}
+                            </x-dropdown-link>
+                        </form>
+                    </x-slot>
+                </x-dropdown>
+            </div>
+
+            <!-- Hamburger -->
+            <div class="-me-2 flex items-center sm:hidden">
+                <button @click="open = ! open" class="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:bg-gray-100 focus:text-gray-500 transition duration-150 ease-in-out">
+                    <svg class="h-6 w-6" stroke="currentColor" fill="none" viewBox="0 0 24 24">
+                        <path :class="{'hidden': open, 'inline-flex': ! open }" class="inline-flex" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                        <path :class="{'hidden': ! open, 'inline-flex': open }" class="hidden" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Responsive Navigation Menu -->
+    <div :class="{'block': open, 'hidden': ! open}" class="hidden sm:hidden">
+        <div class="pt-2 pb-3 space-y-1">
+            <x-responsive-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
+                {{ __('Dashboard') }}
+            </x-responsive-nav-link>
+        </div>
+
+        <!-- Responsive Settings Options -->
+        <div class="pt-4 pb-1 border-t border-gray-200">
+            <div class="px-4">
+                <div class="font-medium text-base text-gray-800">{{ Auth::user()->name }}</div>
+                <div class="font-medium text-sm text-gray-500">{{ Auth::user()->email }}</div>
+            </div>
+
+            <div class="mt-3 space-y-1">
+                <x-responsive-nav-link :href="route('profile.edit')">
+                    {{ __('Profile') }}
+                </x-responsive-nav-link>
+
+                <!-- Authentication -->
+                <form method="POST" action="{{ route('logout') }}">
+                    @csrf
+
+                    <x-responsive-nav-link :href="route('logout')"
+                            onclick="event.preventDefault();
+                                        this.closest('form').submit();">
+                        {{ __('Log Out') }}
+                    </x-responsive-nav-link>
+                </form>
+            </div>
+        </div>
+    </div>
+</nav>
+</file>
+
+<file path="resources/views/profile/partials/delete-user-form.blade.php">
+<section class="space-y-6">
+    <header>
+        <h2 class="text-lg font-medium text-gray-900">
+            {{ __('Delete Account') }}
+        </h2>
+
+        <p class="mt-1 text-sm text-gray-600">
+            {{ __('Once your account is deleted, all of its resources and data will be permanently deleted. Before deleting your account, please download any data or information that you wish to retain.') }}
+        </p>
+    </header>
+
+    <x-danger-button
+        x-data=""
+        x-on:click.prevent="$dispatch('open-modal', 'confirm-user-deletion')"
+    >{{ __('Delete Account') }}</x-danger-button>
+
+    <x-modal name="confirm-user-deletion" :show="$errors->userDeletion->isNotEmpty()" focusable>
+        <form method="post" action="{{ route('profile.destroy') }}" class="p-6">
+            @csrf
+            @method('delete')
+
+            <h2 class="text-lg font-medium text-gray-900">
+                {{ __('Are you sure you want to delete your account?') }}
+            </h2>
+
+            <p class="mt-1 text-sm text-gray-600">
+                {{ __('Once your account is deleted, all of its resources and data will be permanently deleted. Please enter your password to confirm you would like to permanently delete your account.') }}
+            </p>
+
+            <div class="mt-6">
+                <x-input-label for="password" value="{{ __('Password') }}" class="sr-only" />
+
+                <x-text-input
+                    id="password"
+                    name="password"
+                    type="password"
+                    class="mt-1 block w-3/4"
+                    placeholder="{{ __('Password') }}"
+                />
+
+                <x-input-error :messages="$errors->userDeletion->get('password')" class="mt-2" />
+            </div>
+
+            <div class="mt-6 flex justify-end">
+                <x-secondary-button x-on:click="$dispatch('close')">
+                    {{ __('Cancel') }}
+                </x-secondary-button>
+
+                <x-danger-button class="ms-3">
+                    {{ __('Delete Account') }}
+                </x-danger-button>
+            </div>
+        </form>
+    </x-modal>
+</section>
+</file>
+
+<file path="resources/views/profile/partials/update-password-form.blade.php">
+<section>
+    <header>
+        <h2 class="text-lg font-medium text-gray-900">
+            {{ __('Update Password') }}
+        </h2>
+
+        <p class="mt-1 text-sm text-gray-600">
+            {{ __('Ensure your account is using a long, random password to stay secure.') }}
+        </p>
+    </header>
+
+    <form method="post" action="{{ route('password.update') }}" class="mt-6 space-y-6">
+        @csrf
+        @method('put')
+
+        <div>
+            <x-input-label for="update_password_current_password" :value="__('Current Password')" />
+            <x-text-input id="update_password_current_password" name="current_password" type="password" class="mt-1 block w-full" autocomplete="current-password" />
+            <x-input-error :messages="$errors->updatePassword->get('current_password')" class="mt-2" />
+        </div>
+
+        <div>
+            <x-input-label for="update_password_password" :value="__('New Password')" />
+            <x-text-input id="update_password_password" name="password" type="password" class="mt-1 block w-full" autocomplete="new-password" />
+            <x-input-error :messages="$errors->updatePassword->get('password')" class="mt-2" />
+        </div>
+
+        <div>
+            <x-input-label for="update_password_password_confirmation" :value="__('Confirm Password')" />
+            <x-text-input id="update_password_password_confirmation" name="password_confirmation" type="password" class="mt-1 block w-full" autocomplete="new-password" />
+            <x-input-error :messages="$errors->updatePassword->get('password_confirmation')" class="mt-2" />
+        </div>
+
+        <div class="flex items-center gap-4">
+            <x-primary-button>{{ __('Save') }}</x-primary-button>
+
+            @if (session('status') === 'password-updated')
+                <p
+                    x-data="{ show: true }"
+                    x-show="show"
+                    x-transition
+                    x-init="setTimeout(() => show = false, 2000)"
+                    class="text-sm text-gray-600"
+                >{{ __('Saved.') }}</p>
+            @endif
+        </div>
+    </form>
+</section>
+</file>
+
+<file path="resources/views/profile/partials/update-profile-information-form.blade.php">
+<section>
+    <header>
+        <h2 class="text-lg font-medium text-gray-900">
+            {{ __('Profile Information') }}
+        </h2>
+
+        <p class="mt-1 text-sm text-gray-600">
+            {{ __("Update your account's profile information and email address.") }}
+        </p>
+    </header>
+
+    <form id="send-verification" method="post" action="{{ route('verification.send') }}">
+        @csrf
+    </form>
+
+    <form method="post" action="{{ route('profile.update') }}" class="mt-6 space-y-6">
+        @csrf
+        @method('patch')
+
+        <div>
+            <x-input-label for="name" :value="__('Name')" />
+            <x-text-input id="name" name="name" type="text" class="mt-1 block w-full" :value="old('name', $user->name)" required autofocus autocomplete="name" />
+            <x-input-error class="mt-2" :messages="$errors->get('name')" />
+        </div>
+
+        <div>
+            <x-input-label for="email" :value="__('Email')" />
+            <x-text-input id="email" name="email" type="email" class="mt-1 block w-full" :value="old('email', $user->email)" required autocomplete="username" />
+            <x-input-error class="mt-2" :messages="$errors->get('email')" />
+
+            @if ($user instanceof \Illuminate\Contracts\Auth\MustVerifyEmail && ! $user->hasVerifiedEmail())
+                <div>
+                    <p class="text-sm mt-2 text-gray-800">
+                        {{ __('Your email address is unverified.') }}
+
+                        <button form="send-verification" class="underline text-sm text-gray-600 hover:text-gray-900 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                            {{ __('Click here to re-send the verification email.') }}
+                        </button>
+                    </p>
+
+                    @if (session('status') === 'verification-link-sent')
+                        <p class="mt-2 font-medium text-sm text-green-600">
+                            {{ __('A new verification link has been sent to your email address.') }}
+                        </p>
+                    @endif
+                </div>
+            @endif
+        </div>
+
+        <div class="flex items-center gap-4">
+            <x-primary-button>{{ __('Save') }}</x-primary-button>
+
+            @if (session('status') === 'profile-updated')
+                <p
+                    x-data="{ show: true }"
+                    x-show="show"
+                    x-transition
+                    x-init="setTimeout(() => show = false, 2000)"
+                    class="text-sm text-gray-600"
+                >{{ __('Saved.') }}</p>
+            @endif
+        </div>
+    </form>
+</section>
+</file>
+
+<file path="resources/views/profile/edit.blade.php">
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Profile') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
+            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
+                <div class="max-w-xl">
+                    @include('profile.partials.update-profile-information-form')
+                </div>
+            </div>
+
+            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
+                <div class="max-w-xl">
+                    @include('profile.partials.update-password-form')
+                </div>
+            </div>
+
+            <div class="p-4 sm:p-8 bg-white shadow sm:rounded-lg">
+                <div class="max-w-xl">
+                    @include('profile.partials.delete-user-form')
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+</file>
+
+<file path="resources/views/dashboard.blade.php">
+<x-app-layout>
+    <x-slot name="header">
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            {{ __('Dashboard') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
+                <div class="p-6 text-gray-900">
+                    {{ __("You're logged in!") }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+</file>
+
+<file path="routes/auth.php">
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\NewPasswordController;
+use App\Http\Controllers\Auth\PasswordController;
+use App\Http\Controllers\Auth\PasswordResetLinkController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+
+    Route::get('login', [AuthenticatedSessionController::class, 'create'])
+        ->name('login');
+
+    Route::post('login', [AuthenticatedSessionController::class, 'store']);
+
+    Route::get('forgot-password', [PasswordResetLinkController::class, 'create'])
+        ->name('password.request');
+
+    Route::post('forgot-password', [PasswordResetLinkController::class, 'store'])
+        ->name('password.email');
+
+    Route::get('reset-password/{token}', [NewPasswordController::class, 'create'])
+        ->name('password.reset');
+
+    Route::post('reset-password', [NewPasswordController::class, 'store'])
+        ->name('password.store');
+});
+
+Route::middleware('auth')->group(function () {
+    Route::put('password', [PasswordController::class, 'update'])->name('password.update');
+
+    Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])
+        ->name('logout');
+});
 </file>
 
 <file path="routes/console.php">
@@ -3904,29 +4131,6 @@ use Illuminate\Support\Facades\Artisan;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
-</file>
-
-<file path="routes/web.php">
-<?php
-
-use App\Http\Controllers\ProfileController;
-use Illuminate\Support\Facades\Route;
-
-Route::get('/', function () {
-    return view('welcome');
-});
-
-Route::get('/dashboard', function () {
-    return view('dashboard');
-})->middleware(['auth'])->name('dashboard');
-
-Route::middleware('auth')->group(function () {
-    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
-});
-
-require __DIR__ . '/auth.php';
 </file>
 
 <file path="storage/app/private/.gitignore">
@@ -3989,6 +4193,193 @@ services.json
 !.gitignore
 </file>
 
+<file path="tests/Feature/Auth/AuthenticationTest.php">
+<?php
+
+namespace Tests\Feature\Auth;
+
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class AuthenticationTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_login_screen_can_be_rendered(): void
+    {
+        $response = $this->get('/login');
+
+        $response->assertStatus(200);
+    }
+
+    public function test_users_can_authenticate_using_the_login_screen(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+        ]);
+
+        $this->assertAuthenticated();
+        $response->assertRedirect(route('dashboard', absolute: false));
+    }
+
+    public function test_users_can_not_authenticate_with_invalid_password(): void
+    {
+        $user = User::factory()->create();
+
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'wrong-password',
+        ]);
+
+        $this->assertGuest();
+    }
+
+    public function test_users_can_logout(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->actingAs($user)->post('/logout');
+
+        $this->assertGuest();
+        $response->assertRedirect('/');
+    }
+}
+</file>
+
+<file path="tests/Feature/Auth/PasswordResetTest.php">
+<?php
+
+namespace Tests\Feature\Auth;
+
+use App\Models\User;
+use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Notification;
+use Tests\TestCase;
+
+class PasswordResetTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_reset_password_link_screen_can_be_rendered(): void
+    {
+        $response = $this->get('/forgot-password');
+
+        $response->assertStatus(200);
+    }
+
+    public function test_reset_password_link_can_be_requested(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+
+        $this->post('/forgot-password', ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class);
+    }
+
+    public function test_reset_password_screen_can_be_rendered(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+
+        $this->post('/forgot-password', ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class, function ($notification) {
+            $response = $this->get('/reset-password/'.$notification->token);
+
+            $response->assertStatus(200);
+
+            return true;
+        });
+    }
+
+    public function test_password_can_be_reset_with_valid_token(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create();
+
+        $this->post('/forgot-password', ['email' => $user->email]);
+
+        Notification::assertSentTo($user, ResetPassword::class, function ($notification) use ($user) {
+            $response = $this->post('/reset-password', [
+                'token' => $notification->token,
+                'email' => $user->email,
+                'password' => 'password',
+                'password_confirmation' => 'password',
+            ]);
+
+            $response
+                ->assertSessionHasNoErrors()
+                ->assertRedirect(route('login'));
+
+            return true;
+        });
+    }
+}
+</file>
+
+<file path="tests/Feature/Auth/PasswordUpdateTest.php">
+<?php
+
+namespace Tests\Feature\Auth;
+
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
+use Tests\TestCase;
+
+class PasswordUpdateTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_password_can_be_updated(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->from('/profile')
+            ->put('/password', [
+                'current_password' => 'password',
+                'password' => 'new-password',
+                'password_confirmation' => 'new-password',
+            ]);
+
+        $response
+            ->assertSessionHasNoErrors()
+            ->assertRedirect('/profile');
+
+        $this->assertTrue(Hash::check('new-password', $user->refresh()->password));
+    }
+
+    public function test_correct_password_must_be_provided_to_update_password(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->from('/profile')
+            ->put('/password', [
+                'current_password' => 'wrong-password',
+                'password' => 'new-password',
+                'password_confirmation' => 'new-password',
+            ]);
+
+        $response
+            ->assertSessionHasErrorsIn('updatePassword', 'current_password')
+            ->assertRedirect('/profile');
+    }
+}
+</file>
+
 <file path="tests/Feature/ExampleTest.php">
 <?php
 
@@ -4007,6 +4398,108 @@ class ExampleTest extends TestCase
         $response = $this->get('/');
 
         $response->assertStatus(200);
+    }
+}
+</file>
+
+<file path="tests/Feature/ProfileTest.php">
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class ProfileTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_profile_page_is_displayed(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->get('/profile');
+
+        $response->assertOk();
+    }
+
+    public function test_profile_information_can_be_updated(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->patch('/profile', [
+                'name' => 'Test User',
+                'email' => 'test@example.com',
+            ]);
+
+        $response
+            ->assertSessionHasNoErrors()
+            ->assertRedirect('/profile');
+
+        $user->refresh();
+
+        $this->assertSame('Test User', $user->name);
+        $this->assertSame('test@example.com', $user->email);
+        $this->assertNull($user->email_verified_at);
+    }
+
+    public function test_email_verification_status_is_unchanged_when_the_email_address_is_unchanged(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->patch('/profile', [
+                'name' => 'Test User',
+                'email' => $user->email,
+            ]);
+
+        $response
+            ->assertSessionHasNoErrors()
+            ->assertRedirect('/profile');
+
+        $this->assertNotNull($user->refresh()->email_verified_at);
+    }
+
+    public function test_user_can_delete_their_account(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->delete('/profile', [
+                'password' => 'password',
+            ]);
+
+        $response
+            ->assertSessionHasNoErrors()
+            ->assertRedirect('/');
+
+        $this->assertGuest();
+        $this->assertNull($user->fresh());
+    }
+
+    public function test_correct_password_must_be_provided_to_delete_account(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this
+            ->actingAs($user)
+            ->from('/profile')
+            ->delete('/profile', [
+                'password' => 'wrong-password',
+            ]);
+
+        $response
+            ->assertSessionHasErrorsIn('userDeletion', 'password')
+            ->assertRedirect('/profile');
+
+        $this->assertNotNull($user->fresh());
     }
 }
 </file>
@@ -4202,6 +4695,710 @@ $status = $app->handleCommand(new ArgvInput);
 exit($status);
 </file>
 
+<file path="description.txt">
+Bonjour,
+Je m'appelle Karim, je suis propriétaire du Salon Yasmine, un salon de coiffure et esthétique à Annaba. On est 3 coiffeuses/coiffeurs qui travaillons ensemble.
+Mon problème actuellement :
+Les clients m'appellent toute la journée pour prendre rendez-vous, et je gère tout sur un cahier papier. Résultat : je me trompe souvent, il m'arrive de mettre deux clients à la même heure, ou d'avoir un créneau vide alors qu'une coiffeuse est disponible. C'est devenu ingérable.
+Ce dont j'ai besoin :
+Que le client puisse réserver lui-même depuis son téléphone, sans m'appeler, et voir en temps réel les créneaux disponibles
+Une vue d'ensemble pour moi : qui vient, à quelle heure, avec quelle coiffeuse
+Un planning séparé pour chaque coiffeuse (pas tout mélangé)
+Pouvoir ajouter ou modifier les services (coupe, brushing, coloration...), avec leur prix et leur durée
+Suivre les rendez-vous honorés et les no-shows (certains clients réservent et ne viennent pas)
+Avoir les coordonnées de chaque client (téléphone, email) pour pouvoir leur envoyer des promotions ou des rappels plus tard
+Questions importantes :
+Est-ce que le client peut réserver directement depuis son téléphone sans télécharger d'application ? J'ai peur que les clients plus âgés ne sachent pas installer une app.
+Le design doit être élégant — mon salon a une décoration haut de gamme, le site doit refléter ça.
+Combien de temps ça prendrait, et quel serait le tarif approximatif ?
+</file>
+
+<file path="laravel">
+
+</file>
+
+<file path="phpunit.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="BROADCAST_CONNECTION" value="null"/>
+        <env name="CACHE_STORE" value="array"/>
+        <env name="DB_DATABASE" value="testing"/>
+        <env name="DB_URL" value=""/>
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+        <env name="PULSE_ENABLED" value="false"/>
+        <env name="TELESCOPE_ENABLED" value="false"/>
+        <env name="NIGHTWATCH_ENABLED" value="false"/>
+    </php>
+</phpunit>
+</file>
+
+<file path="postcss.config.js">
+export default {
+    plugins: {
+        tailwindcss: {},
+        autoprefixer: {},
+    },
+};
+</file>
+
+<file path="README.md">
+<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+
+<p align="center">
+<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
+<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
+<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
+<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
+</p>
+
+## About Laravel
+
+Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+
+- [Simple, fast routing engine](https://laravel.com/docs/routing).
+- [Powerful dependency injection container](https://laravel.com/docs/container).
+- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
+- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
+- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
+- [Robust background job processing](https://laravel.com/docs/queues).
+- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+
+Laravel is accessible, powerful, and provides tools required for large, robust applications.
+
+## Learning Laravel
+
+Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+
+In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+
+You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+
+## Agentic Development
+
+Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+
+```bash
+composer require laravel/boost --dev
+
+php artisan boost:install
+```
+
+Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+
+## Contributing
+
+Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+
+## Code of Conduct
+
+In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+
+## Security Vulnerabilities
+
+If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+
+## License
+
+The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+</file>
+
+<file path="tailwind.config.js">
+import defaultTheme from 'tailwindcss/defaultTheme';
+import forms from '@tailwindcss/forms';
+
+/** @type {import('tailwindcss').Config} */
+export default {
+    content: [
+        './vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php',
+        './storage/framework/views/*.php',
+        './resources/views/**/*.blade.php',
+    ],
+
+    theme: {
+        extend: {
+            fontFamily: {
+                sans: ['Figtree', ...defaultTheme.fontFamily.sans],
+            },
+        },
+    },
+
+    plugins: [forms],
+};
+</file>
+
+<file path="app/Models/Appointment.php">
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use App\Enums\AppointmentStatus;
+
+class Appointment extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'client_id',
+        'staff_id',
+        'service_id',
+        'start_time',
+        'end_time',
+        'total_price',
+        'status',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'start_time' => 'datetime',
+            'end_time' => 'datetime',
+            'total_price' => 'decimal:2',
+            'status' => AppointmentStatus::class,
+        ];
+    }
+
+    /**
+     * Get the client for the appointment.
+     */
+    public function client(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'client_id');
+    }
+
+    /**
+     * Get the staff member assigned to the appointment.
+     */
+    public function staff(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'staff_id');
+    }
+
+    /**
+     * Get the service booked in the appointment.
+     */
+    public function service(): BelongsTo
+    {
+        return $this->belongsTo(Service::class);
+    }
+
+    /**
+     * Get the addons included in the appointment.
+     */
+    public function addons(): BelongsToMany
+    {
+        return $this->belongsToMany(ServiceAddon::class, 'appointment_addon');
+    }
+}
+</file>
+
+<file path="app/Models/User.php">
+<?php
+
+namespace App\Models;
+
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+#[Fillable(['name', 'email', 'phone', 'password', 'role'])]
+#[Hidden(['password', 'remember_token'])]
+class User extends Authenticatable
+{
+    /** @use HasFactory<UserFactory> */
+    use HasFactory, Notifiable;
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+
+    /**
+     * Get the staff schedules for the user.
+     */
+    public function staffSchedules(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(StaffSchedule::class, 'staff_id');
+    }
+
+    /**
+     * Get the appointments where the user is the client.
+     */
+    public function clientAppointments(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Appointment::class, 'client_id');
+    }
+
+    /**
+     * Get the appointments where the user is the staff member.
+     */
+    public function staffAppointments(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Appointment::class, 'staff_id');
+    }
+}
+</file>
+
+<file path="database/factories/UserFactory.php">
+<?php
+
+namespace Database\Factories;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+/**
+ * @extends Factory<User>
+ */
+class UserFactory extends Factory
+{
+    /**
+     * The current password being used by the factory.
+     */
+    protected static ?string $password;
+
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [
+            'name' => fake()->name(),
+            'email' => fake()->unique()->safeEmail(),
+            'phone' => fake()->unique()->phoneNumber(),
+            'role' => 'client',
+            'email_verified_at' => now(),
+            'password' => static::$password ??= Hash::make('password'),
+            'remember_token' => Str::random(10),
+        ];
+    }
+
+    /**
+     * Indicate that the model's email address should be unverified.
+     */
+    public function unverified(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'email_verified_at' => null,
+        ]);
+    }
+}
+</file>
+
+<file path="database/migrations/0001_01_01_000000_create_users_table.php">
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->nullable()->unique();
+            $table->string('phone')->nullable()->unique();
+            $table->timestamp('email_verified_at')->nullable();
+            $table->string('password')->nullable();
+            $table->string('role')->default('client'); // admin, staff, client
+            $table->rememberToken();
+            $table->timestamps();
+        });
+
+        Schema::create('password_reset_tokens', function (Blueprint $table) {
+            $table->string('email')->primary();
+            $table->string('token');
+            $table->timestamp('created_at')->nullable();
+        });
+
+        Schema::create('sessions', function (Blueprint $table) {
+            $table->string('id')->primary();
+            $table->foreignId('user_id')->nullable()->index();
+            $table->string('ip_address', 45)->nullable();
+            $table->text('user_agent')->nullable();
+            $table->longText('payload');
+            $table->integer('last_activity')->index();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('users');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('sessions');
+    }
+};
+</file>
+
+<file path="database/migrations/2026_07_26_013804_create_appointments_table.php">
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('appointments', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('client_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('staff_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('service_id')->constrained('services')->cascadeOnDelete();
+            $table->dateTime('start_time');
+            $table->dateTime('end_time');
+            $table->decimal('total_price', 8, 2);
+            $table->string('status')->default('confirmed'); //  confirmed, completed, cancelled, no-show
+            $table->index(['staff_id', 'start_time', 'end_time']);
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('appointments');
+    }
+};
+</file>
+
+<file path="database/seeders/DatabaseSeeder.php">
+<?php
+
+namespace Database\Seeders;
+
+use App\Enums\AppointmentStatus;
+use App\Models\Appointment;
+use App\Models\Service;
+use App\Models\ServiceAddon;
+use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+use Illuminate\Database\Seeder;
+
+class DatabaseSeeder extends Seeder
+{
+    use WithoutModelEvents;
+
+    public function run(): void
+    {
+        // --- Staff & Owner ---
+
+        User::factory()->create([
+            'name' => 'Karim',
+            'email' => 'karim@salonyasmine.test',
+            'password' => bcrypt('password'),
+            'role' => 'admin',
+        ]);
+
+        $yasmine = User::factory()->create([
+            'name' => 'Yasmine',
+            'email' => 'yasmine@salonyasmine.test',
+            'password' => bcrypt('password'),
+            'role' => 'staff',
+        ]);
+
+        $sara = User::factory()->create([
+            'name' => 'Sara',
+            'email' => 'sara@salonyasmine.test',
+            'password' => bcrypt('password'),
+            'role' => 'staff',
+        ]);
+
+        // Yasmine: closed Friday
+        foreach ([0, 1, 2, 3, 4, 6] as $day) {
+            $yasmine->staffSchedules()->create([
+                'day_of_week' => $day,
+                'start_time' => '09:00',
+                'end_time' => '18:00',
+            ]);
+        }
+
+        // Sara: closed Sunday, shorter days
+        foreach ([1, 2, 3, 4, 5, 6] as $day) {
+            $sara->staffSchedules()->create([
+                'day_of_week' => $day,
+                'start_time' => '10:00',
+                'end_time' => '17:00',
+            ]);
+        }
+
+        // --- Services (photo is a stable seeded placeholder, not
+        // a literally accurate photo — see chat notes on why) ---
+
+        $haircut = Service::create([
+            'name' => 'Haircut',
+            'description' => 'A classic cut tailored to your face shape and style.',
+            'photo' => 'https://picsum.photos/seed/salon-haircut/600/400',
+            'base_price' => 1500,
+            'duration_minutes' => 30,
+        ]);
+
+        $coloring = Service::create([
+            'name' => 'Hair Coloring',
+            'description' => 'Full color or highlights using professional-grade dye.',
+            'photo' => 'https://picsum.photos/seed/salon-coloring/600/400',
+            'base_price' => 4000,
+            'duration_minutes' => 90,
+        ]);
+
+        $blowout = Service::create([
+            'name' => 'Blowout',
+            'description' => 'Wash, blow-dry, and style for a polished finish.',
+            'photo' => 'https://picsum.photos/seed/salon-blowout/600/400',
+            'base_price' => 1200,
+            'duration_minutes' => 45,
+        ]);
+
+        $manicure = Service::create([
+            'name' => 'Manicure',
+            'description' => 'Nail shaping, cuticle care, and polish of your choice.',
+            'photo' => 'https://picsum.photos/seed/salon-manicure/600/400',
+            'base_price' => 1000,
+            'duration_minutes' => 40,
+        ]);
+
+        // --- Add-ons ---
+
+        ServiceAddon::create([
+            'service_id' => $haircut->id,
+            'name' => 'Beard Trim',
+            'extra_price' => 300,
+            'extra_duration_minutes' => 15,
+        ]);
+
+        ServiceAddon::create([
+            'service_id' => $haircut->id,
+            'name' => 'Hair Wash',
+            'extra_price' => 200,
+            'extra_duration_minutes' => 10,
+        ]);
+
+        ServiceAddon::create([
+            'service_id' => $coloring->id,
+            'name' => 'Deep Conditioning Treatment',
+            'extra_price' => 800,
+            'extra_duration_minutes' => 20,
+        ]);
+
+        ServiceAddon::create([
+            'service_id' => $manicure->id,
+            'name' => 'Gel Polish',
+            'extra_price' => 500,
+            'extra_duration_minutes' => 15,
+        ]);
+
+        // --- Test clients ---
+
+        $amina = User::factory()->create(['name' => 'Amina', 'phone' => '0555111111']);
+        $nadia = User::factory()->create(['name' => 'Nadia', 'phone' => '0555222222']);
+        $leila = User::factory()->create(['name' => 'Leila', 'phone' => '0555333333']);
+        $farid = User::factory()->create(['name' => 'Farid', 'phone' => '0555444444']);
+
+        // --- Already-booked appointments, to exercise the availability engine ---
+
+        $today = Carbon::today();
+        $tomorrow = Carbon::tomorrow();
+        $dayAfter = Carbon::today()->addDays(2);
+
+        // Yasmine, today: a single appointment mid-day.
+        Appointment::create([
+            'client_id' => $amina->id,
+            'staff_id' => $yasmine->id,
+            'service_id' => $haircut->id,
+            'start_time' => $today->copy()->setTime(10, 0),
+            'end_time' => $today->copy()->setTime(10, 30),
+            'total_price' => $haircut->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+
+        // Yasmine, today: back-to-back pair, to test that no phantom
+        // gap gets created between two adjacent appointments.
+        Appointment::create([
+            'client_id' => $nadia->id,
+            'staff_id' => $yasmine->id,
+            'service_id' => $blowout->id,
+            'start_time' => $today->copy()->setTime(15, 0),
+            'end_time' => $today->copy()->setTime(15, 45),
+            'total_price' => $blowout->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+        Appointment::create([
+            'client_id' => $leila->id,
+            'staff_id' => $yasmine->id,
+            'service_id' => $haircut->id,
+            'start_time' => $today->copy()->setTime(15, 45),
+            'end_time' => $today->copy()->setTime(16, 15),
+            'total_price' => $haircut->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+
+        // Yasmine, tomorrow: a long coloring appointment.
+        Appointment::create([
+            'client_id' => $farid->id,
+            'staff_id' => $yasmine->id,
+            'service_id' => $coloring->id,
+            'start_time' => $tomorrow->copy()->setTime(14, 0),
+            'end_time' => $tomorrow->copy()->setTime(15, 30),
+            'total_price' => $coloring->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+
+        // Sara, today: one appointment.
+        Appointment::create([
+            'client_id' => $nadia->id,
+            'staff_id' => $sara->id,
+            'service_id' => $blowout->id,
+            'start_time' => $today->copy()->setTime(11, 0),
+            'end_time' => $today->copy()->setTime(11, 45),
+            'total_price' => $blowout->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+
+        // Sara, day after tomorrow: an early manicure.
+        Appointment::create([
+            'client_id' => $amina->id,
+            'staff_id' => $sara->id,
+            'service_id' => $manicure->id,
+            'start_time' => $dayAfter->copy()->setTime(10, 0),
+            'end_time' => $dayAfter->copy()->setTime(10, 40),
+            'total_price' => $manicure->base_price,
+            'status' => AppointmentStatus::Confirmed->value,
+        ]);
+
+        // A cancelled appointment, to confirm the availability engine
+        // correctly ignores it and still offers this slot as free.
+        Appointment::create([
+            'client_id' => $leila->id,
+            'staff_id' => $yasmine->id,
+            'service_id' => $manicure->id,
+            'start_time' => $tomorrow->copy()->setTime(9, 0),
+            'end_time' => $tomorrow->copy()->setTime(9, 40),
+            'total_price' => $manicure->base_price,
+            'status' => AppointmentStatus::Cancelled->value,
+        ]);
+    }
+}
+</file>
+
+<file path="resources/css/app.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+</file>
+
+<file path="resources/js/app.js">
+import Alpine from 'alpinejs';
+
+window.Alpine = Alpine;
+
+Alpine.start();
+</file>
+
+<file path="routes/web.php">
+<?php
+
+use App\Http\Controllers\ProfileController;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Booking\BookingController;
+
+Route::get('/', function () {
+    return redirect()->route('booking.start');
+});
+
+Route::get('/dashboard', function () {
+    return view('dashboard');
+})->middleware(['auth'])->name('dashboard');
+
+Route::get('/book', [BookingController::class, 'create'])->name('booking.start');
+Route::post('/book', [BookingController::class, 'store'])->name('booking.store');
+Route::get('/book/service', [BookingController::class, 'selectService'])->name('booking.service');
+Route::post('/book/service', [BookingController::class, 'storeService'])->name('booking.service.store');
+Route::get('/book/staff', [BookingController::class, 'selectStaff'])->name('booking.staff');
+Route::post('/book/staff', [BookingController::class, 'storeStaff'])->name('booking.staff.store');
+Route::get('/book/slots', [BookingController::class, 'selectSlot'])->name('booking.slots');
+Route::post('/book/confirm', [BookingController::class, 'storeAppointment'])->name('booking.confirm');
+Route::get('/book/confirmation', [BookingController::class, 'confirmation'])->name('booking.confirmation');
+Route::get('/my-appointments', [BookingController::class, 'myAppointments'])->name('booking.my-appointments');
+Route::post('/my-appointments/{appointment}/cancel', [BookingController::class, 'cancelAppointment'])->name('booking.appointment.cancel');
+Route::post('/book/logout', [BookingController::class, 'logout'])->name('booking.logout');
+
+Route::middleware('auth')->group(function () {
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+});
+
+require __DIR__ . '/auth.php';
+</file>
+
 <file path="compose.yaml">
 services:
     laravel.test:
@@ -4386,28 +5583,6 @@ volumes:
 }
 </file>
 
-<file path="description.txt">
-Bonjour,
-Je m'appelle Karim, je suis propriétaire du Salon Yasmine, un salon de coiffure et esthétique à Annaba. On est 3 coiffeuses/coiffeurs qui travaillons ensemble.
-Mon problème actuellement :
-Les clients m'appellent toute la journée pour prendre rendez-vous, et je gère tout sur un cahier papier. Résultat : je me trompe souvent, il m'arrive de mettre deux clients à la même heure, ou d'avoir un créneau vide alors qu'une coiffeuse est disponible. C'est devenu ingérable.
-Ce dont j'ai besoin :
-Que le client puisse réserver lui-même depuis son téléphone, sans m'appeler, et voir en temps réel les créneaux disponibles
-Une vue d'ensemble pour moi : qui vient, à quelle heure, avec quelle coiffeuse
-Un planning séparé pour chaque coiffeuse (pas tout mélangé)
-Pouvoir ajouter ou modifier les services (coupe, brushing, coloration...), avec leur prix et leur durée
-Suivre les rendez-vous honorés et les no-shows (certains clients réservent et ne viennent pas)
-Avoir les coordonnées de chaque client (téléphone, email) pour pouvoir leur envoyer des promotions ou des rappels plus tard
-Questions importantes :
-Est-ce que le client peut réserver directement depuis son téléphone sans télécharger d'application ? J'ai peur que les clients plus âgés ne sachent pas installer une app.
-Le design doit être élégant — mon salon a une décoration haut de gamme, le site doit refléter ça.
-Combien de temps ça prendrait, et quel serait le tarif approximatif ?
-</file>
-
-<file path="laravel">
-
-</file>
-
 <file path="package.json">
 {
     "$schema": "https://www.schemastore.org/package.json",
@@ -4431,105 +5606,6 @@ Combien de temps ça prendrait, et quel serait le tarif approximatif ?
 }
 </file>
 
-<file path="phpunit.xml">
-<?xml version="1.0" encoding="UTF-8"?>
-<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
-         bootstrap="vendor/autoload.php"
-         colors="true"
->
-    <testsuites>
-        <testsuite name="Unit">
-            <directory>tests/Unit</directory>
-        </testsuite>
-        <testsuite name="Feature">
-            <directory>tests/Feature</directory>
-        </testsuite>
-    </testsuites>
-    <source>
-        <include>
-            <directory>app</directory>
-        </include>
-    </source>
-    <php>
-        <env name="APP_ENV" value="testing"/>
-        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
-        <env name="BCRYPT_ROUNDS" value="4"/>
-        <env name="BROADCAST_CONNECTION" value="null"/>
-        <env name="CACHE_STORE" value="array"/>
-        <env name="DB_DATABASE" value="testing"/>
-        <env name="DB_URL" value=""/>
-        <env name="MAIL_MAILER" value="array"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
-        <env name="SESSION_DRIVER" value="array"/>
-        <env name="PULSE_ENABLED" value="false"/>
-        <env name="TELESCOPE_ENABLED" value="false"/>
-        <env name="NIGHTWATCH_ENABLED" value="false"/>
-    </php>
-</phpunit>
-</file>
-
-<file path="README.md">
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
-
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
-
-## About Laravel
-
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
-
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
-```
-
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
-</file>
-
 <file path="vite.config.js">
 import { defineConfig } from 'vite';
 import laravel from 'laravel-vite-plugin';
@@ -4542,186 +5618,6 @@ export default defineConfig({
         }),
     ],
 });
-</file>
-
-<file path="app/Models/User.php">
-<?php
-
-namespace App\Models;
-
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
-use Database\Factories\UserFactory;
-use Illuminate\Database\Eloquent\Attributes\Fillable;
-use Illuminate\Database\Eloquent\Attributes\Hidden;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
-
-#[Fillable(['name', 'email', 'phone', 'password', 'role'])]
-#[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
-{
-    /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable;
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
-
-    /**
-     * Get the staff schedules for the user.
-     */
-    public function staffSchedules(): \Illuminate\Database\Eloquent\Relations\HasMany
-    {
-        return $this->hasMany(StaffSchedule::class, 'staff_id');
-    }
-
-    /**
-     * Get the appointments where the user is the client.
-     */
-    public function clientAppointments(): \Illuminate\Database\Eloquent\Relations\HasMany
-    {
-        return $this->hasMany(Appointment::class, 'client_id');
-    }
-
-    /**
-     * Get the appointments where the user is the staff member.
-     */
-    public function staffAppointments(): \Illuminate\Database\Eloquent\Relations\HasMany
-    {
-        return $this->hasMany(Appointment::class, 'staff_id');
-    }
-}
-</file>
-
-<file path="database/factories/UserFactory.php">
-<?php
-
-namespace Database\Factories;
-
-use App\Models\User;
-use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
-
-/**
- * @extends Factory<User>
- */
-class UserFactory extends Factory
-{
-    /**
-     * The current password being used by the factory.
-     */
-    protected static ?string $password;
-
-    /**
-     * Define the model's default state.
-     *
-     * @return array<string, mixed>
-     */
-    public function definition(): array
-    {
-        return [
-            'name' => fake()->name(),
-            'email' => fake()->unique()->safeEmail(),
-            'phone' => fake()->unique()->phoneNumber(),
-            'role' => 'client',
-            'email_verified_at' => now(),
-            'password' => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
-        ];
-    }
-
-    /**
-     * Indicate that the model's email address should be unverified.
-     */
-    public function unverified(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'email_verified_at' => null,
-        ]);
-    }
-}
-</file>
-
-<file path="database/migrations/0001_01_01_000000_create_users_table.php">
-<?php
-
-use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
-
-return new class extends Migration
-{
-    /**
-     * Run the migrations.
-     */
-    public function up(): void
-    {
-        Schema::create('users', function (Blueprint $table) {
-            $table->id();
-            $table->string('name');
-            $table->string('email')->nullable()->unique();
-            $table->string('phone')->nullable()->unique();
-            $table->timestamp('email_verified_at')->nullable();
-            $table->string('password')->nullable();
-            $table->string('role')->default('client'); // admin, staff, client
-            $table->rememberToken();
-            $table->timestamps();
-        });
-
-        Schema::create('password_reset_tokens', function (Blueprint $table) {
-            $table->string('email')->primary();
-            $table->string('token');
-            $table->timestamp('created_at')->nullable();
-        });
-
-        Schema::create('sessions', function (Blueprint $table) {
-            $table->string('id')->primary();
-            $table->foreignId('user_id')->nullable()->index();
-            $table->string('ip_address', 45)->nullable();
-            $table->text('user_agent')->nullable();
-            $table->longText('payload');
-            $table->integer('last_activity')->index();
-        });
-    }
-
-    /**
-     * Reverse the migrations.
-     */
-    public function down(): void
-    {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
-        Schema::dropIfExists('sessions');
-    }
-};
-</file>
-
-<file path="resources/views/welcome.blade.php">
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-</head>
-
-<body>
-    <h1>This is an appointment booking system</h1>
-</body>
-
-</html>
 </file>
 
 </files>
