@@ -1,58 +1,98 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Salon Booking System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A real-time appointment booking system built for a small hair & beauty salon, replacing a paper notebook that was causing double-bookings and scheduling chaos. Built with **Laravel 13**, **Blade**, **Tailwind CSS**, and **Alpine.js**.
 
-## About Laravel
+> This is a portfolio project. It simulates a real freelance brief (translated below) and was built end-to-end — schema design, business logic, and UI — as a demonstration of practical backend and frontend engineering, not a tutorial clone.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## The brief
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+The (fictional) client, a salon owner in Algeria, described this problem:
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+> Clients call me all day to book appointments, and I manage everything on a paper notebook. As a result, I make mistakes often — sometimes I put two clients at the same time, or I have an empty slot while a stylist is available. It's become unmanageable.
 
-## Learning Laravel
+Requirements that came out of that conversation:
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+- Clients should be able to book themselves from their phone — **no app download**, since older clients may not know how to install one
+- Real-time slot availability, so no more double-booked appointments
+- Each stylist should have their **own independent schedule**, not one shared calendar
+- Services (haircut, coloring, etc.) need configurable price and duration
+- Track completed appointments vs. no-shows
+- Design should feel upscale, matching a high-end salon — not a generic form
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## What's implemented
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+This repository covers the **complete client-facing booking flow**, end to end:
 
-## Agentic Development
+1. **Client identification** — name + phone, no account or password required. Returning clients are recognized automatically by phone number (`firstOrCreate`).
+2. **Service selection** — browsable service cards with photo, description, price, and duration, plus optional add-ons per service.
+3. **Stylist selection** — pick a specific staff member (not auto-assigned).
+4. **Real-time availability** — browse a 14-day window, see only the time slots that are actually bookable for that stylist and service duration.
+5. **Booking confirmation** — a summary (service, add-ons, stylist, time, total price) before committing.
+6. **Race-condition-safe booking** — the appointment is only created after re-validating availability inside a locked database transaction (see below).
+7. **Manage upcoming appointments** — clients can view and cancel their own booking without creating an account.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+**Not yet built** (deliberately out of scope for this phase): the owner/staff admin dashboard, SMS/email reminders, and multi-day recurring schedule exceptions (e.g. a stylist taking a single day off outside their normal pattern).
+
+## Architecture highlights
+
+### The availability engine
+
+The core problem: given a stylist, a date, and a service duration, compute every legitimate time this appointment could start — accounting for working hours _and_ existing bookings.
+
+`app/Services/AvailabilityService.php` solves this in three steps rather than checking every minute of the day one at a time:
+
+1. **Resolve the working window** for that day from the stylist's recurring weekly schedule (`StaffSchedule`).
+2. **Invert existing appointments into free gaps** — a single forward sweep through the day's bookings, turning "busy ranges" into "free ranges" between them. Back-to-back appointments correctly produce zero gap between them (a common off-by-one mistake this avoids).
+3. **Generate bookable slots within each gap**, at a fixed interval, only where the _entire_ service duration (including add-ons) still fits before the gap closes — a 90-minute coloring service can't start 20 minutes before closing time, even though that moment is technically "free."
+
+### Preventing double-bookings under concurrency
+
+Showing an available slot and actually booking it are two different moments in time — two clients can view the same free slot simultaneously. The final booking step (`BookingController::storeAppointment`) handles this deliberately:
+
+- The chosen time is **re-validated against the availability engine itself** server-side — the client's browser is never trusted to submit a legitimate slot just because it matches the expected format.
+- The conflict check and the appointment creation both happen inside a **single database transaction using `lockForUpdate()`**, so a second concurrent request checking the same stylist's schedule is forced to wait until the first request's transaction fully resolves — preventing both from seeing a stale "still free" result and creating overlapping appointments.
+
+### Security: validating relationships, not just existence
+
+A few validation rules go beyond "does this ID exist" to "does this ID make sense _in this context_" — e.g. confirming a submitted `staff_id` actually belongs to a user with the `staff` role, and that a chosen add-on actually belongs to the service being booked, not just any service in the database. IDs referencing _which row_ are trusted from the client; anything affecting price, duration, or business rules is always recomputed server-side.
+
+### Session-based booking wizard
+
+Rather than a single giant form, the flow is a multi-step session-backed wizard — each step validates that the required prior steps were completed (you can't reach the stylist picker without a selected service, etc.) and redirects to the earliest missing step rather than restarting the whole flow.
+
+## Tech stack
+
+- **Laravel 13** (PHP)
+- **Blade** templates, no separate frontend framework/build for logic — kept deliberately simple where a full SPA wasn't warranted
+- **Tailwind CSS**, mobile-first, with a distinct dark/cyan visual theme for client-facing pages vs. a lighter theme for staff/owner auth
+- **Alpine.js** for lightweight interactivity (modals, panels) without a heavier JS framework
+- **MySQL**
+
+## Setup
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+git clone <this-repo>
+cd <project-folder>
+cp .env.example .env
+composer install
+./vendor/bin/sail up -d
+sail artisan key:generate
+sail artisan migrate:fresh --seed
+sail npm install
+sail npm run dev
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Visit `http://localhost/book` to start a booking as a client.
 
-## Contributing
+Seeded test accounts (see `database/seeders/DatabaseSeeder.php`):
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+- Owner: `karim@salonyasmine.test` / `password`
+- Staff: `yasmine@salonyasmine.test` / `password`, `sara@salonyasmine.test` / `password`
 
-## Code of Conduct
+## Roadmap
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- [ ] Owner/staff dashboard (calendar overview, per-stylist schedule view)
+- [ ] Service/staff CRUD for the owner
+- [ ] No-show tracking and reporting
+- [ ] SMS/email appointment reminders
+- [ ] Per-date schedule exceptions (holidays, sick days)
