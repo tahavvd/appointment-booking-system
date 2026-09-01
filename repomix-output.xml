@@ -195,7 +195,6 @@ tests/
 artisan
 compose.yaml
 composer.json
-description.txt
 laravel
 package.json
 phpunit.xml
@@ -207,506 +206,6 @@ vite.config.js
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="app/Services/AvailabilityService.php">
-<?php
-
-namespace App\Services;
-
-use App\Enums\AppointmentStatus;
-use App\Models\User;
-use Carbon\Carbon;
-
-class AvailabilityService
-{
-    /**
-     * Granularity of bookable start times, in minutes.
-     */
-    protected int $slotInterval = 30;
-
-    /**
-     * Get every bookable start time for a staff member, on a given date,
-     * for a service of the given duration.
-     *
-     * @return Carbon[]
-     */
-    public function slotsFor(User $staff, Carbon $date, int $serviceDurationMinutes): array
-    {
-        $schedule = $staff->staffSchedules()
-            ->where('day_of_week', $date->dayOfWeek)
-            ->first();
-
-        // No schedule row for this day at all = staff doesn't work this day.
-        if (! $schedule) {
-            return [];
-        }
-
-        $windowStart = Carbon::parse($date->toDateString() . ' ' . $schedule->start_time);
-        $windowEnd = Carbon::parse($date->toDateString() . ' ' . $schedule->end_time);
-
-        $busyRanges = $staff->staffAppointments()
-            ->whereDate('start_time', $date->toDateString())
-            ->where('status', '!=', AppointmentStatus::Cancelled->value)
-            ->orderBy('start_time')
-            ->get(['start_time', 'end_time']);
-
-        $freeGaps = $this->computeFreeGaps($windowStart, $windowEnd, $busyRanges);
-
-        return $this->generateSlots($freeGaps, $serviceDurationMinutes);
-    }
-
-    /**
-     * Given a working window and a list of busy ranges inside it,
-     * return the free ranges left over.
-     *
-     * @return array<array{0: Carbon, 1: Carbon}>
-     */
-    protected function computeFreeGaps(Carbon $windowStart, Carbon $windowEnd, $busyRanges): array
-    {
-        $gaps = [];
-        $cursor = $windowStart->copy();
-
-        foreach ($busyRanges as $busy) {
-            if ($busy->start_time->gt($cursor)) {
-                $gaps[] = [$cursor->copy(), $busy->start_time->copy()];
-            }
-
-            if ($busy->end_time->gt($cursor)) {
-                $cursor = $busy->end_time->copy();
-            }
-        }
-
-        if ($cursor->lt($windowEnd)) {
-            $gaps[] = [$cursor->copy(), $windowEnd->copy()];
-        }
-
-        return $gaps;
-    }
-
-    /**
-     * Turn free gaps into actual bookable start times, spaced by
-     * $slotInterval, only where the full service duration still fits.
-     *
-     * @return Carbon[]
-     */
-    protected function generateSlots(array $freeGaps, int $serviceDurationMinutes): array
-    {
-        $slots = [];
-
-        foreach ($freeGaps as [$gapStart, $gapEnd]) {
-            $slotStart = $gapStart->copy();
-
-            while ($slotStart->copy()->addMinutes($serviceDurationMinutes)->lte($gapEnd)) {
-                if ($slotStart->isFuture()) {
-                    $slots[] = $slotStart->copy();
-                }
-
-                $slotStart->addMinutes($this->slotInterval);
-            }
-        }
-
-        return $slots;
-    }
-}
-</file>
-
-<file path="app/View/Components/ClientLayout.php">
-<?php
-
-namespace App\View\Components;
-
-use Illuminate\View\Component;
-use Illuminate\View\View;
-
-class ClientLayout extends Component
-{
-    public function render(): View
-    {
-        return view('layouts.client');
-    }
-}
-</file>
-
-<file path="resources/views/booking/confirmation.blade.php">
-<x-client-layout>
-    <div class="max-w-md mx-auto px-4 pt-16 pb-16 text-center">
-
-        <div class="w-16 h-16 rounded-full bg-cyan-600 flex items-center justify-center mx-auto mb-6">
-            <svg class="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-        </div>
-
-        <h1 class="text-2xl text-white mb-2" style="font-family:'Fraunces',serif;">You're booked!</h1>
-        <p class="text-white/60 text-sm mb-8">See you soon.</p>
-
-        <div class="bg-white rounded-2xl p-5 text-left space-y-2 text-sm">
-            <div class="flex justify-between">
-                <span class="text-slate-500">Service</span>
-                <span class="text-slate-900 font-medium">{{ $appointment->service->name }}</span>
-            </div>
-            <div class="flex justify-between">
-                <span class="text-slate-500">Stylist</span>
-                <span class="text-slate-900 font-medium">{{ $appointment->staff->name }}</span>
-            </div>
-            <div class="flex justify-between">
-                <span class="text-slate-500">When</span>
-                <span class="text-slate-900 font-medium">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</span>
-            </div>
-            <div class="flex justify-between pt-2 border-t border-slate-100">
-                <span class="text-slate-700 font-medium">Total</span>
-                <span class="text-cyan-700 font-semibold">{{ number_format($appointment->total_price, 0) }} DA</span>
-            </div>
-        </div>
-
-    </div>
-</x-client-layout>
-</file>
-
-<file path="resources/views/booking/my-appointments.blade.php">
-<x-client-layout>
-    <div class="max-w-md mx-auto px-4 pt-10 pb-16">
-
-        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
-        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Your appointment</h1>
-        <p class="text-sm text-white/50 mb-8">Upcoming bookings.</p>
-
-        @if (session('status'))
-        <p class="text-sm text-cyan-200 bg-cyan-900/30 border border-cyan-800 rounded-lg px-4 py-2 mb-6">
-            {{ session('status') }}
-        </p>
-        @endif
-
-        <div class="space-y-4">
-            @forelse ($appointments as $appointment)
-            <div class="bg-white rounded-2xl p-5 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)]">
-                <p class="font-medium text-slate-900">{{ $appointment->service->name }}</p>
-                <p class="text-sm text-slate-500">with {{ $appointment->staff->name }}</p>
-                <p class="text-sm text-slate-500 mt-1">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</p>
-
-                <form method="POST" action="{{ route('booking.appointment.cancel', $appointment) }}"
-                    onsubmit="return confirm('Cancel this appointment?')" class="mt-4">
-                    @csrf
-                    <button type="submit" class="text-sm text-red-600 hover:text-red-700 font-medium">
-                        Cancel appointment
-                    </button>
-                </form>
-            </div>
-            @empty
-            <p class="text-white/50 text-sm">You have no upcoming appointments.</p>
-            @endforelse
-        </div>
-
-    </div>
-</x-client-layout>
-</file>
-
-<file path="resources/views/booking/service.blade.php">
-<x-client-layout>
-    <div class="max-w-md md:max-w-3xl lg:max-w-6xl mx-auto px-4 pt-10 pb-16 md:pt-16">
-
-        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
-        <h1 class="text-3xl md:text-4xl lg:text-5xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your service</h1>
-        <p class="text-sm md:text-base text-white/50 mb-8 md:mb-12">Tap Book on the one you'd like.</p>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            @foreach ($services as $service)
-            <div x-data="{ open: false }" class="relative bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] overflow-hidden">
-
-                <img src="{{ $service->photo_url }}" alt="{{ $service->name }}" class="w-full h-44 object-cover">
-
-                <div class="absolute left-4 top-44 bg-cyan-600 text-white text-sm font-semibold px-3 py-1.5 rounded-lg shadow-md" style="transform: translateY(-50%) rotate(-2deg);">
-                    {{ number_format($service->base_price, 0) }} DA
-                </div>
-
-                <div class="pt-5 px-5 pb-5">
-                    <h2 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">{{ $service->name }}</h2>
-                    <p class="text-sm text-slate-500 mt-1 leading-relaxed">{{ $service->description }}</p>
-
-                    <div class="flex items-center justify-between mt-4">
-                        <span class="text-xs text-slate-400">{{ $service->duration_minutes }} min</span>
-
-                        <button type="button" @click="open = true" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
-                            Book
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Addon panel, hidden until "Book" is tapped -->
-                <div x-show="open" x-cloak @click.self="open = false"
-                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
-                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
-
-                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Add anything extra?</h3>
-                        <p class="text-sm text-slate-500 mt-1 mb-4">Optional — skip if you just want the {{ $service->name }}.</p>
-
-                        <form method="POST" action="{{ route('booking.service.store') }}">
-                            @csrf
-                            <input type="hidden" name="service_id" value="{{ $service->id }}">
-
-                            <div class="space-y-3 mb-5">
-                                @forelse ($service->addons as $addon)
-                                <label class="flex items-center justify-between gap-3 cursor-pointer">
-                                    <span class="flex items-center gap-3">
-                                        <input type="checkbox" name="addon_ids[]" value="{{ $addon->id }}"
-                                            class="rounded border-slate-300 text-cyan-600 accent-cyan-600 focus:ring-cyan-500">
-                                        <span class="text-sm text-slate-700">{{ $addon->name }}</span>
-                                    </span>
-                                    <span class="text-sm text-slate-400">+{{ number_format($addon->extra_price, 0) }} DA</span>
-                                </label>
-                                @empty
-                                <p class="text-sm text-slate-400">No add-ons available for this service.</p>
-                                @endforelse
-                            </div>
-
-                            <div class="flex gap-2">
-                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
-                                    Cancel
-                                </button>
-                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
-                                    Continue
-                                </button>
-                            </div>
-                        </form>
-
-                    </div>
-                </div>
-
-            </div>
-            @endforeach
-        </div>
-
-    </div>
-</x-client-layout>
-</file>
-
-<file path="resources/views/booking/slots.blade.php">
-<x-client-layout>
-    <div class="max-w-md md:max-w-2xl mx-auto px-4 pt-10 pb-16">
-
-        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
-        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Pick a time</h1>
-        <p class="text-sm text-white/50 mb-6">With {{ $staff->name }}</p>
-
-        @if (session('error'))
-        <p class="text-sm text-red-300 bg-red-900/30 border border-red-800 rounded-lg px-4 py-2 mb-6">
-            {{ session('error') }}
-        </p>
-        @endif
-
-        <!-- Day picker -->
-        <div class="flex gap-2 overflow-x-auto pb-2 mb-6 -mx-4 px-4">
-            @foreach ($days as $day)
-            <a href="{{ route('booking.slots', ['date' => $day->toDateString()]) }}"
-                class="shrink-0 flex flex-col items-center justify-center w-14 h-16 rounded-xl
-                          {{ $day->isSameDay($selectedDate) ? 'bg-cyan-600 text-white' : 'bg-white/10 text-white/70' }}">
-                <span class="text-xs">{{ $day->format('D') }}</span>
-                <span class="text-lg font-semibold">{{ $day->format('d') }}</span>
-            </a>
-            @endforeach
-        </div>
-
-        <!-- Slots for the selected day -->
-        <div class="grid grid-cols-3 gap-3">
-            @forelse ($slots as $slot)
-            <div x-data="{ open: false }">
-                <button type="button" @click="open = true" class="w-full bg-white text-slate-900 text-sm font-medium py-3 rounded-xl shadow-sm hover:bg-cyan-50 transition">
-                    {{ $slot->format('H:i') }}
-                </button>
-
-                <!-- Confirmation panel for this specific slot -->
-                <div x-show="open" x-cloak @click.self="open = false"
-                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
-                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
-
-                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Confirm your booking</h3>
-
-                        <div class="mt-4 space-y-2 text-sm">
-                            <div class="flex justify-between">
-                                <span class="text-slate-500">Stylist</span>
-                                <span class="text-slate-900 font-medium">{{ $staff->name }}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-slate-500">Service</span>
-                                <span class="text-slate-900 font-medium">{{ $service->name }}</span>
-                            </div>
-                            @foreach ($addons as $addon)
-                            <div class="flex justify-between">
-                                <span class="text-slate-500">+ {{ $addon->name }}</span>
-                                <span class="text-slate-900">{{ number_format($addon->extra_price, 0) }} DA</span>
-                            </div>
-                            @endforeach
-                            <div class="flex justify-between">
-                                <span class="text-slate-500">When</span>
-                                <span class="text-slate-900 font-medium">{{ $selectedDate->format('D, M d') }} at {{ $slot->format('H:i') }}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-slate-500">Duration</span>
-                                <span class="text-slate-900">{{ $totalDuration }} min</span>
-                            </div>
-                            <div class="flex justify-between pt-2 border-t border-slate-100">
-                                <span class="text-slate-700 font-medium">Total</span>
-                                <span class="text-cyan-700 font-semibold">{{ number_format($totalPrice, 0) }} DA</span>
-                            </div>
-                        </div>
-
-                        <form method="POST" action="{{ route('booking.confirm') }}" class="mt-5">
-                            @csrf
-                            <input type="hidden" name="start_time" value="{{ $slot->toDateTimeString() }}">
-
-                            <div class="flex gap-2">
-                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
-                                    Cancel
-                                </button>
-                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
-                                    Book
-                                </button>
-                            </div>
-                        </form>
-
-                    </div>
-                </div>
-            </div>
-            @empty
-            <p class="col-span-3 text-white/50 text-sm">No availability this day.</p>
-            @endforelse
-        </div>
-
-    </div>
-</x-client-layout>
-</file>
-
-<file path="resources/views/booking/staff.blade.php">
-<x-client-layout>
-    <div class="max-w-md md:max-w-3xl mx-auto px-4 pt-10 pb-16">
-
-        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
-        <h1 class="text-3xl md:text-4xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your stylist</h1>
-        <p class="text-sm text-white/50 mb-8">Pick who you'd like to see.</p>
-
-        <div class="space-y-4">
-            @foreach ($staff as $member)
-            <div class="bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] p-5 flex items-center justify-between">
-                <div class="flex items-center gap-4">
-                    <div class="w-12 h-12 rounded-full bg-cyan-100 text-cyan-700 font-semibold flex items-center justify-center" style="font-family:'Fraunces',serif;">
-                        {{ strtoupper(substr($member->name, 0, 1)) }}
-                    </div>
-                    <p class="font-medium text-slate-900">{{ $member->name }}</p>
-                </div>
-
-                <form method="POST" action="{{ route('booking.staff.store') }}">
-                    @csrf
-                    <input type="hidden" name="staff_id" value="{{ $member->id }}">
-                    <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
-                        Choose
-                    </button>
-                </form>
-            </div>
-            @endforeach
-        </div>
-
-    </div>
-</x-client-layout>
-</file>
-
-<file path="resources/views/layouts/client.blade.php">
-<!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
-
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>{{ config('app.name', 'Laravel') }}</title>
-
-    <link rel="preconnect" href="https://fonts.bunny.net">
-    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
-
-    @vite(['resources/css/app.css', 'resources/js/app.js'])
-</head>
-
-<body class="font-sans text-slate-800 antialiased" style="background-color:#072A2E;">
-
-    @if (session()->has('booking.client_id'))
-    {{-- Desktop top navbar --}}
-    <nav class="hidden md:block sticky top-0 z-40 backdrop-blur-xl bg-[#072A2E]/80 border-b border-white/10">
-        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-
-            <a href="{{ route('booking.service') }}" class="text-lg text-white tracking-tight" style="font-family:'Fraunces',serif;">
-                {{ config('app.name') }}
-            </a>
-
-            <div class="flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1">
-                <a href="{{ route('booking.service') }}"
-                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.service') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
-                    Services
-                </a>
-                <a href="{{ route('booking.my-appointments') }}"
-                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.my-appointments') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
-                    My Appointment
-                </a>
-            </div>
-
-            <form method="POST" action="{{ route('booking.logout') }}">
-                @csrf
-                <button type="submit" class="flex items-center gap-2 text-sm font-medium text-white/60 hover:text-red-400 transition">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
-                    </svg>
-                    Log out
-                </button>
-            </form>
-
-        </div>
-    </nav>
-    @endif
-
-    <div class="min-h-screen {{ session()->has('booking.client_id') ? 'pb-28 md:pb-0' : '' }}" style="background:radial-gradient(120% 60% at 50% 0%, rgba(103,232,249,0.14), transparent 60%);">
-
-        {{ $slot }}
-
-        @if (session()->has('booking.client_id'))
-        {{-- Mobile bottom nav --}}
-        <nav class="md:hidden fixed bottom-0 left-0 right-0 z-40 px-4" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1rem);">
-            <div class="max-w-md mx-auto bg-[#0A3338]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.5)] flex items-stretch overflow-hidden mt-4">
-
-                <a href="{{ route('booking.service') }}"
-                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.service') ? 'text-cyan-300' : 'text-white/40' }}">
-                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1V9.5z" />
-                    </svg>
-                    <span class="text-[11px] font-medium">Services</span>
-                </a>
-
-                <a href="{{ route('booking.my-appointments') }}"
-                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.my-appointments') ? 'text-cyan-300' : 'text-white/40' }}">
-                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                        <rect x="3" y="5" width="18" height="16" rx="2" />
-                        <path stroke-linecap="round" d="M8 3v4M16 3v4M3 10h18" />
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 14.5l2 2 4-4" />
-                    </svg>
-                    <span class="text-[11px] font-medium">Appointment</span>
-                </a>
-
-                <form method="POST" action="{{ route('booking.logout') }}" class="flex-1">
-                    @csrf
-                    <button type="submit" class="w-full h-full flex flex-col items-center gap-1 py-3 text-white/40 transition">
-                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
-                        </svg>
-                        <span class="text-[11px] font-medium">Log out</span>
-                    </button>
-                </form>
-
-            </div>
-        </nav>
-        @endif
-
-    </div>
-</body>
-
-</html>
-</file>
 
 <file path="app/Enums/AppointmentStatus.php">
 <?php
@@ -918,297 +417,6 @@ class PasswordResetLinkController extends Controller
 }
 </file>
 
-<file path="app/Http/Controllers/Booking/BookingController.php">
-<?php
-
-namespace App\Http\Controllers\Booking;
-
-use App\Enums\AppointmentStatus;
-use App\Http\Controllers\Controller;
-use App\Models\Appointment;
-use App\Models\Service;
-use App\Models\ServiceAddon;
-use App\Models\User;
-use App\Services\AvailabilityService;
-use Carbon\Carbon;
-use Illuminate\Http\Request;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
-use Illuminate\View\View;
-
-class BookingController extends Controller
-{
-    public function create(): View
-    {
-        return view('booking.start');
-    }
-
-    public function store(Request $request): RedirectResponse
-    {
-        $request->merge([
-            'phone' => preg_replace('/\s+/', '', (string) $request->input('phone')),
-        ]);
-
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'phone' => ['required', 'string', 'regex:/^0[567][0-9]{8}$/'],
-        ]);
-
-        $client = User::firstOrCreate(
-            ['phone' => $validated['phone']],
-            ['name' => $validated['name']],
-        );
-
-        session(['booking.client_id' => $client->id]);
-
-        return redirect()->route('booking.service');
-    }
-
-    public function selectService(): View|RedirectResponse
-    {
-        if (! session()->has('booking.client_id')) {
-            return redirect()->route('booking.start');
-        }
-
-        $services = Service::with('addons')->get();
-
-        return view('booking.service', ['services' => $services]);
-    }
-
-    public function storeService(Request $request): RedirectResponse
-    {
-        if (! session()->has('booking.client_id')) {
-            return redirect()->route('booking.start');
-        }
-
-        $validated = $request->validate([
-            'service_id' => ['required', 'exists:services,id'],
-            'addon_ids' => ['array'],
-            'addon_ids.*' => [
-                Rule::exists('service_addons', 'id')
-                    ->where('service_id', $request->input('service_id')),
-            ],
-        ]);
-
-        session([
-            'booking.service_id' => $validated['service_id'],
-            'booking.addon_ids' => $validated['addon_ids'] ?? [],
-        ]);
-
-        return redirect()->route('booking.staff');
-    }
-
-    public function selectStaff(): View|RedirectResponse
-    {
-        if (! session()->has('booking.service_id')) {
-            return redirect()->route('booking.service');
-        }
-
-        $staff = User::where('role', 'staff')->get();
-
-        return view('booking.staff', ['staff' => $staff]);
-    }
-
-    public function storeStaff(Request $request): RedirectResponse
-    {
-        if (! session()->has('booking.service_id')) {
-            return redirect()->route('booking.service');
-        }
-
-        $validated = $request->validate([
-            'staff_id' => ['required', Rule::exists('users', 'id')->where('role', 'staff')],
-        ]);
-
-        session(['booking.staff_id' => $validated['staff_id']]);
-
-        return redirect()->route('booking.slots');
-    }
-
-    public function selectSlot(Request $request): View|RedirectResponse
-    {
-        if (! session()->has('booking.staff_id')) {
-            return redirect()->route('booking.staff');
-        }
-
-        $staff = User::findOrFail(session('booking.staff_id'));
-        $service = Service::findOrFail(session('booking.service_id'));
-        $addonIds = session('booking.addon_ids', []);
-        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
-
-        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
-        $totalPrice = $service->base_price + $addons->sum('extra_price');
-
-        $selectedDate = $request->query('date')
-            ? Carbon::parse($request->query('date'))
-            : Carbon::today();
-
-        $days = collect(range(0, 13))->map(
-            fn($i) => Carbon::today()->addDays($i)
-        );
-
-        $slots = app(AvailabilityService::class)->slotsFor($staff, $selectedDate, $totalDuration);
-
-        return view('booking.slots', [
-            'staff' => $staff,
-            'service' => $service,
-            'addons' => $addons,
-            'totalDuration' => $totalDuration,
-            'totalPrice' => $totalPrice,
-            'days' => $days,
-            'selectedDate' => $selectedDate,
-            'slots' => $slots,
-        ]);
-    }
-
-    public function storeAppointment(Request $request): RedirectResponse
-    {
-        if (! session()->has('booking.staff_id')) {
-            return redirect()->route('booking.staff');
-        }
-
-        $validated = $request->validate([
-            'start_time' => ['required', 'date'],
-        ]);
-
-        $clientId = session('booking.client_id');
-        $staffId = session('booking.staff_id');
-        $serviceId = session('booking.service_id');
-        $addonIds = session('booking.addon_ids', []);
-
-        $service = Service::findOrFail($serviceId);
-        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
-
-        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
-        $totalPrice = $service->base_price + $addons->sum('extra_price');
-
-        $startTime = Carbon::parse($validated['start_time']);
-        $endTime = $startTime->copy()->addMinutes($totalDuration);
-
-        $appointment = DB::transaction(function () use (
-            $clientId,
-            $staffId,
-            $serviceId,
-            $startTime,
-            $endTime,
-            $totalPrice,
-            $totalDuration
-        ) {
-            $staff = User::where('id', $staffId)->where('role', 'staff')->firstOrFail();
-
-            // Re-run the availability engine, using the same rules the
-            // client saw when browsing — never trust the submitted
-            // start_time just because it matches the expected format.
-            $validSlots = app(AvailabilityService::class)
-                ->slotsFor($staff, $startTime->copy()->startOfDay(), $totalDuration);
-
-            $isLegitimateSlot = collect($validSlots)->contains(
-                fn($slot) => $slot->equalTo($startTime)
-            );
-
-            if (! $isLegitimateSlot) {
-                return null;
-            }
-
-            // Lock any of this staff member's appointments that day, so no
-            // other request can insert a conflicting one while we check.
-            $conflictExists = Appointment::where('staff_id', $staffId)
-                ->where('status', '!=', AppointmentStatus::Cancelled->value)
-                ->where('start_time', '<', $endTime)
-                ->where('end_time', '>', $startTime)
-                ->lockForUpdate()
-                ->exists();
-
-            if ($conflictExists) {
-                return null;
-            }
-
-            return Appointment::create([
-                'client_id' => $clientId,
-                'staff_id' => $staffId,
-                'service_id' => $serviceId,
-                'start_time' => $startTime,
-                'end_time' => $endTime,
-                'total_price' => $totalPrice,
-                'status' => AppointmentStatus::Confirmed->value,
-            ]);
-        });
-
-        if (! $appointment) {
-            return redirect()->route('booking.slots')
-                ->with('error', 'That slot is no longer available — please pick another.');
-        }
-
-        $appointment->addons()->attach($addonIds);
-
-        // Client identity persists across bookings — only the
-        // choices specific to this one booking get cleared.
-        session()->forget([
-            'booking.service_id',
-            'booking.addon_ids',
-            'booking.staff_id',
-        ]);
-
-        session(['booking.confirmed_id' => $appointment->id]);
-
-        return redirect()->route('booking.confirmation');
-    }
-
-    public function confirmation(): View|RedirectResponse
-    {
-        if (! session()->has('booking.confirmed_id')) {
-            return redirect()->route('booking.start');
-        }
-
-        $appointment = Appointment::with(['service', 'staff'])
-            ->findOrFail(session()->pull('booking.confirmed_id'));
-
-        return view('booking.confirmation', ['appointment' => $appointment]);
-    }
-
-    public function myAppointments(): View|RedirectResponse
-    {
-        if (! session()->has('booking.client_id')) {
-            return redirect()->route('booking.start');
-        }
-
-        $appointments = Appointment::with(['service', 'staff'])
-            ->where('client_id', session('booking.client_id'))
-            ->where('status', AppointmentStatus::Confirmed->value)
-            ->where('start_time', '>=', now())
-            ->orderBy('start_time')
-            ->get();
-
-        return view('booking.my-appointments', ['appointments' => $appointments]);
-    }
-
-    public function cancelAppointment(Appointment $appointment): RedirectResponse
-    {
-        if (! session()->has('booking.client_id')) {
-            return redirect()->route('booking.start');
-        }
-
-        // Ownership check — a client can only cancel their own
-        // appointment, never one referenced by guessing an ID.
-        if ($appointment->client_id !== session('booking.client_id')) {
-            abort(403);
-        }
-
-        $appointment->update(['status' => AppointmentStatus::Cancelled->value]);
-
-        return redirect()->route('booking.my-appointments')
-            ->with('status', 'Appointment cancelled.');
-    }
-
-    public function logout(): RedirectResponse
-    {
-        session()->forget('booking.client_id');
-
-        return redirect()->route('booking.start');
-    }
-}
-</file>
-
 <file path="app/Http/Controllers/Controller.php">
 <?php
 
@@ -1406,78 +614,6 @@ class ProfileUpdateRequest extends FormRequest
 }
 </file>
 
-<file path="app/Models/Service.php">
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Casts\Attribute;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-
-class Service extends Model
-{
-    use HasFactory;
-
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $fillable = [
-        'name',
-        'description',
-        'photo',
-        'base_price',
-        'duration_minutes',
-    ];
-
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'base_price' => 'decimal:2',
-            'duration_minutes' => 'integer',
-        ];
-    }
-
-    /**
-     * Resolve a usable photo URL whether `photo` is a full external
-     * URL (used for seeded placeholders) or a local storage path
-     * (used once real uploads exist).
-     */
-    protected function photoUrl(): Attribute
-    {
-        return Attribute::get(
-            fn() => str_starts_with($this->photo, 'http')
-                ? $this->photo
-                : asset('storage/' . $this->photo)
-        );
-    }
-
-    /**
-     * Get the addons for the service.
-     */
-    public function addons(): HasMany
-    {
-        return $this->hasMany(ServiceAddon::class);
-    }
-
-    /**
-     * Get the appointments for the service.
-     */
-    public function appointments(): HasMany
-    {
-        return $this->hasMany(Appointment::class);
-    }
-}
-</file>
-
 <file path="app/Models/ServiceAddon.php">
 <?php
 
@@ -1616,6 +752,108 @@ class AppServiceProvider extends ServiceProvider
 }
 </file>
 
+<file path="app/Services/AvailabilityService.php">
+<?php
+
+namespace App\Services;
+
+use App\Enums\AppointmentStatus;
+use App\Models\User;
+use Carbon\Carbon;
+
+class AvailabilityService
+{
+    /**
+     * Granularity of bookable start times, in minutes.
+     */
+    protected int $slotInterval = 30;
+
+    /**
+     * Get every bookable start time for a staff member, on a given date,
+     * for a service of the given duration.
+     *
+     * @return Carbon[]
+     */
+    public function slotsFor(User $staff, Carbon $date, int $serviceDurationMinutes): array
+    {
+        $schedule = $staff->staffSchedules()
+            ->where('day_of_week', $date->dayOfWeek)
+            ->first();
+
+        // No schedule row for this day at all = staff doesn't work this day.
+        if (! $schedule) {
+            return [];
+        }
+
+        $windowStart = Carbon::parse($date->toDateString() . ' ' . $schedule->start_time);
+        $windowEnd = Carbon::parse($date->toDateString() . ' ' . $schedule->end_time);
+
+        $busyRanges = $staff->staffAppointments()
+            ->whereDate('start_time', $date->toDateString())
+            ->where('status', '!=', AppointmentStatus::Cancelled->value)
+            ->orderBy('start_time')
+            ->get(['start_time', 'end_time']);
+
+        $freeGaps = $this->computeFreeGaps($windowStart, $windowEnd, $busyRanges);
+
+        return $this->generateSlots($freeGaps, $serviceDurationMinutes);
+    }
+
+    /**
+     * Given a working window and a list of busy ranges inside it,
+     * return the free ranges left over.
+     *
+     * @return array<array{0: Carbon, 1: Carbon}>
+     */
+    protected function computeFreeGaps(Carbon $windowStart, Carbon $windowEnd, $busyRanges): array
+    {
+        $gaps = [];
+        $cursor = $windowStart->copy();
+
+        foreach ($busyRanges as $busy) {
+            if ($busy->start_time->gt($cursor)) {
+                $gaps[] = [$cursor->copy(), $busy->start_time->copy()];
+            }
+
+            if ($busy->end_time->gt($cursor)) {
+                $cursor = $busy->end_time->copy();
+            }
+        }
+
+        if ($cursor->lt($windowEnd)) {
+            $gaps[] = [$cursor->copy(), $windowEnd->copy()];
+        }
+
+        return $gaps;
+    }
+
+    /**
+     * Turn free gaps into actual bookable start times, spaced by
+     * $slotInterval, only where the full service duration still fits.
+     *
+     * @return Carbon[]
+     */
+    protected function generateSlots(array $freeGaps, int $serviceDurationMinutes): array
+    {
+        $slots = [];
+
+        foreach ($freeGaps as [$gapStart, $gapEnd]) {
+            $slotStart = $gapStart->copy();
+
+            while ($slotStart->copy()->addMinutes($serviceDurationMinutes)->lte($gapEnd)) {
+                if ($slotStart->isFuture()) {
+                    $slots[] = $slotStart->copy();
+                }
+
+                $slotStart->addMinutes($this->slotInterval);
+            }
+        }
+
+        return $slots;
+    }
+}
+</file>
+
 <file path="app/View/Components/AppLayout.php">
 <?php
 
@@ -1632,6 +870,23 @@ class AppLayout extends Component
     public function render(): View
     {
         return view('layouts.app');
+    }
+}
+</file>
+
+<file path="app/View/Components/ClientLayout.php">
+<?php
+
+namespace App\View\Components;
+
+use Illuminate\View\Component;
+use Illuminate\View\View;
+
+class ClientLayout extends Component
+{
+    public function render(): View
+    {
+        return view('layouts.client');
     }
 }
 </file>
@@ -3118,41 +2373,6 @@ return new class extends Migration
 };
 </file>
 
-<file path="database/migrations/2026_07_26_013801_create_services_table.php">
-<?php
-
-use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
-
-return new class extends Migration
-{
-    /**
-     * Run the migrations.
-     */
-    public function up(): void
-    {
-        Schema::create('services', function (Blueprint $table) {
-            $table->id();
-            $table->string('name');
-            $table->text('description')->nullable();
-            $table->string('photo');
-            $table->decimal('base_price', 8, 2);
-            $table->integer('duration_minutes');
-            $table->timestamps();
-        });
-    }
-
-    /**
-     * Reverse the migrations.
-     */
-    public function down(): void
-    {
-        Schema::dropIfExists('services');
-    }
-};
-</file>
-
 <file path="database/migrations/2026_07_26_013802_create_service_addons_table.php">
 <?php
 
@@ -3438,6 +2658,288 @@ Disallow:
 </x-guest-layout>
 </file>
 
+<file path="resources/views/booking/confirmation.blade.php">
+<x-client-layout>
+    <div class="max-w-md mx-auto px-4 pt-16 pb-16 text-center">
+
+        <div class="w-16 h-16 rounded-full bg-cyan-600 flex items-center justify-center mx-auto mb-6">
+            <svg class="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+        </div>
+
+        <h1 class="text-2xl text-white mb-2" style="font-family:'Fraunces',serif;">You're booked!</h1>
+        <p class="text-white/60 text-sm mb-8">See you soon.</p>
+
+        <div class="bg-white rounded-2xl p-5 text-left space-y-2 text-sm">
+            <div class="flex justify-between">
+                <span class="text-slate-500">Service</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->service->name }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-slate-500">Stylist</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->staff->name }}</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-slate-500">When</span>
+                <span class="text-slate-900 font-medium">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</span>
+            </div>
+            <div class="flex justify-between pt-2 border-t border-slate-100">
+                <span class="text-slate-700 font-medium">Total</span>
+                <span class="text-cyan-700 font-semibold">{{ number_format($appointment->total_price, 0) }} DA</span>
+            </div>
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/my-appointments.blade.php">
+<x-client-layout>
+    <div class="max-w-md mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Your appointment</h1>
+        <p class="text-sm text-white/50 mb-8">Upcoming bookings.</p>
+
+        @if (session('status'))
+        <p class="text-sm text-cyan-200 bg-cyan-900/30 border border-cyan-800 rounded-lg px-4 py-2 mb-6">
+            {{ session('status') }}
+        </p>
+        @endif
+
+        <div class="space-y-4">
+            @forelse ($appointments as $appointment)
+            <div class="bg-white rounded-2xl p-5 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)]">
+                <p class="font-medium text-slate-900">{{ $appointment->service->name }}</p>
+                <p class="text-sm text-slate-500">with {{ $appointment->staff->name }}</p>
+                <p class="text-sm text-slate-500 mt-1">{{ $appointment->start_time->format('D, M d \a\t H:i') }}</p>
+
+                <form method="POST" action="{{ route('booking.appointment.cancel', $appointment) }}"
+                    onsubmit="return confirm('Cancel this appointment?')" class="mt-4">
+                    @csrf
+                    <button type="submit" class="text-sm text-red-600 hover:text-red-700 font-medium">
+                        Cancel appointment
+                    </button>
+                </form>
+            </div>
+            @empty
+            <p class="text-white/50 text-sm">You have no upcoming appointments.</p>
+            @endforelse
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/service.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-3xl lg:max-w-6xl mx-auto px-4 pt-10 pb-16 md:pt-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl md:text-4xl lg:text-5xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your service</h1>
+        <p class="text-sm md:text-base text-white/50 mb-8 md:mb-12">Tap Book on the one you'd like.</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            @foreach ($services as $service)
+            <div x-data="{ open: false }" class="relative bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] overflow-hidden">
+
+                <img src="{{ $service->photo_url }}" alt="{{ $service->name }}" class="w-full h-44 object-cover">
+
+                <div class="absolute left-4 top-44 bg-cyan-600 text-white text-sm font-semibold px-3 py-1.5 rounded-lg shadow-md" style="transform: translateY(-50%) rotate(-2deg);">
+                    {{ number_format($service->base_price, 0) }} DA
+                </div>
+
+                <div class="pt-5 px-5 pb-5">
+                    <h2 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">{{ $service->name }}</h2>
+                    <p class="text-sm text-slate-500 mt-1 leading-relaxed">{{ $service->description }}</p>
+
+                    <div class="flex items-center justify-between mt-4">
+                        <span class="text-xs text-slate-400">{{ $service->duration_minutes }} min</span>
+
+                        <button type="button" @click="open = true" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
+                            Book
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Addon panel, hidden until "Book" is tapped -->
+                <div x-show="open" x-cloak @click.self="open = false"
+                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
+                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
+
+                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Add anything extra?</h3>
+                        <p class="text-sm text-slate-500 mt-1 mb-4">Optional — skip if you just want the {{ $service->name }}.</p>
+
+                        <form method="POST" action="{{ route('booking.service.store') }}">
+                            @csrf
+                            <input type="hidden" name="service_id" value="{{ $service->id }}">
+
+                            <div class="space-y-3 mb-5">
+                                @forelse ($service->addons as $addon)
+                                <label class="flex items-center justify-between gap-3 cursor-pointer">
+                                    <span class="flex items-center gap-3">
+                                        <input type="checkbox" name="addon_ids[]" value="{{ $addon->id }}"
+                                            class="rounded border-slate-300 text-cyan-600 accent-cyan-600 focus:ring-cyan-500">
+                                        <span class="text-sm text-slate-700">{{ $addon->name }}</span>
+                                    </span>
+                                    <span class="text-sm text-slate-400">+{{ number_format($addon->extra_price, 0) }} DA</span>
+                                </label>
+                                @empty
+                                <p class="text-sm text-slate-400">No add-ons available for this service.</p>
+                                @endforelse
+                            </div>
+
+                            <div class="flex gap-2">
+                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
+                                    Continue
+                                </button>
+                            </div>
+                        </form>
+
+                    </div>
+                </div>
+
+            </div>
+            @endforeach
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/slots.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-2xl mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl text-white mb-1" style="font-family:'Fraunces',serif;">Pick a time</h1>
+        <p class="text-sm text-white/50 mb-6">With {{ $staff->name }}</p>
+
+        @if (session('error'))
+        <p class="text-sm text-red-300 bg-red-900/30 border border-red-800 rounded-lg px-4 py-2 mb-6">
+            {{ session('error') }}
+        </p>
+        @endif
+
+        <!-- Day picker -->
+        <div class="flex gap-2 overflow-x-auto pb-2 mb-6 -mx-4 px-4">
+            @foreach ($days as $day)
+            <a href="{{ route('booking.slots', ['date' => $day->toDateString()]) }}"
+                class="shrink-0 flex flex-col items-center justify-center w-14 h-16 rounded-xl
+                          {{ $day->isSameDay($selectedDate) ? 'bg-cyan-600 text-white' : 'bg-white/10 text-white/70' }}">
+                <span class="text-xs">{{ $day->format('D') }}</span>
+                <span class="text-lg font-semibold">{{ $day->format('d') }}</span>
+            </a>
+            @endforeach
+        </div>
+
+        <!-- Slots for the selected day -->
+        <div class="grid grid-cols-3 gap-3">
+            @forelse ($slots as $slot)
+            <div x-data="{ open: false }">
+                <button type="button" @click="open = true" class="w-full bg-white text-slate-900 text-sm font-medium py-3 rounded-xl shadow-sm hover:bg-cyan-50 transition">
+                    {{ $slot->format('H:i') }}
+                </button>
+
+                <!-- Confirmation panel for this specific slot -->
+                <div x-show="open" x-cloak @click.self="open = false"
+                    class="fixed inset-0 bg-black/50 flex items-end md:items-center justify-center z-50 p-4">
+                    <div @click.stop class="bg-white rounded-2xl w-full max-w-sm p-5">
+
+                        <h3 class="text-lg text-slate-900" style="font-family:'Fraunces',serif;">Confirm your booking</h3>
+
+                        <div class="mt-4 space-y-2 text-sm">
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Stylist</span>
+                                <span class="text-slate-900 font-medium">{{ $staff->name }}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Service</span>
+                                <span class="text-slate-900 font-medium">{{ $service->name }}</span>
+                            </div>
+                            @foreach ($addons as $addon)
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">+ {{ $addon->name }}</span>
+                                <span class="text-slate-900">{{ number_format($addon->extra_price, 0) }} DA</span>
+                            </div>
+                            @endforeach
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">When</span>
+                                <span class="text-slate-900 font-medium">{{ $selectedDate->format('D, M d') }} at {{ $slot->format('H:i') }}</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-500">Duration</span>
+                                <span class="text-slate-900">{{ $totalDuration }} min</span>
+                            </div>
+                            <div class="flex justify-between pt-2 border-t border-slate-100">
+                                <span class="text-slate-700 font-medium">Total</span>
+                                <span class="text-cyan-700 font-semibold">{{ number_format($totalPrice, 0) }} DA</span>
+                            </div>
+                        </div>
+
+                        <form method="POST" action="{{ route('booking.confirm') }}" class="mt-5">
+                            @csrf
+                            <input type="hidden" name="start_time" value="{{ $slot->toDateTimeString() }}">
+
+                            <div class="flex gap-2">
+                                <button type="button" @click="open = false" class="flex-1 text-sm text-slate-500 hover:text-slate-700 px-4 py-2.5">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-4 py-2.5 rounded-full transition active:scale-95">
+                                    Book
+                                </button>
+                            </div>
+                        </form>
+
+                    </div>
+                </div>
+            </div>
+            @empty
+            <p class="col-span-3 text-white/50 text-sm">No availability this day.</p>
+            @endforelse
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
+<file path="resources/views/booking/staff.blade.php">
+<x-client-layout>
+    <div class="max-w-md md:max-w-3xl mx-auto px-4 pt-10 pb-16">
+
+        <p class="text-xs tracking-[0.2em] uppercase text-cyan-300/80 mb-2">{{ config('app.name') }}</p>
+        <h1 class="text-3xl md:text-4xl text-white mb-1" style="font-family:'Fraunces',serif;">Choose your stylist</h1>
+        <p class="text-sm text-white/50 mb-8">Pick who you'd like to see.</p>
+
+        <div class="space-y-4">
+            @foreach ($staff as $member)
+            <div class="bg-white rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.4)] p-5 flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-cyan-100 text-cyan-700 font-semibold flex items-center justify-center" style="font-family:'Fraunces',serif;">
+                        {{ strtoupper(substr($member->name, 0, 1)) }}
+                    </div>
+                    <p class="font-medium text-slate-900">{{ $member->name }}</p>
+                </div>
+
+                <form method="POST" action="{{ route('booking.staff.store') }}">
+                    @csrf
+                    <input type="hidden" name="staff_id" value="{{ $member->id }}">
+                    <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-semibold px-5 py-2 rounded-full shadow-sm transition active:scale-95">
+                        Choose
+                    </button>
+                </form>
+            </div>
+            @endforeach
+        </div>
+
+    </div>
+</x-client-layout>
+</file>
+
 <file path="resources/views/booking/start.blade.php">
 <x-guest-layout>
     <div class="mb-6">
@@ -3712,6 +3214,105 @@ $classes = ($active ?? false)
             </main>
         </div>
     </body>
+</html>
+</file>
+
+<file path="resources/views/layouts/client.blade.php">
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{{ config('app.name', 'Laravel') }}</title>
+
+    <link rel="preconnect" href="https://fonts.bunny.net">
+    <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
+
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+
+<body class="font-sans text-slate-800 antialiased" style="background-color:#072A2E;">
+
+    @if (session()->has('booking.client_id'))
+    {{-- Desktop top navbar --}}
+    <nav class="hidden md:block sticky top-0 z-40 backdrop-blur-xl bg-[#072A2E]/80 border-b border-white/10">
+        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+
+            <a href="{{ route('booking.service') }}" class="text-lg text-white tracking-tight" style="font-family:'Fraunces',serif;">
+                {{ config('app.name') }}
+            </a>
+
+            <div class="flex items-center gap-1 bg-white/5 border border-white/10 rounded-full p-1">
+                <a href="{{ route('booking.service') }}"
+                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.service') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
+                    Services
+                </a>
+                <a href="{{ route('booking.my-appointments') }}"
+                    class="px-4 py-1.5 rounded-full text-sm font-medium transition {{ request()->routeIs('booking.my-appointments') ? 'bg-cyan-600 text-white shadow-sm' : 'text-white/60 hover:text-white' }}">
+                    My Appointment
+                </a>
+            </div>
+
+            <form method="POST" action="{{ route('booking.logout') }}">
+                @csrf
+                <button type="submit" class="flex items-center gap-2 text-sm font-medium text-white/60 hover:text-red-400 transition">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                    </svg>
+                    Log out
+                </button>
+            </form>
+
+        </div>
+    </nav>
+    @endif
+
+    <div class="min-h-screen {{ session()->has('booking.client_id') ? 'pb-28 md:pb-0' : '' }}" style="background:radial-gradient(120% 60% at 50% 0%, rgba(103,232,249,0.14), transparent 60%);">
+
+        {{ $slot }}
+
+        @if (session()->has('booking.client_id'))
+        {{-- Mobile bottom nav --}}
+        <nav class="md:hidden fixed bottom-0 left-0 right-0 z-40 px-4" style="padding-bottom: calc(env(safe-area-inset-bottom) + 1rem);">
+            <div class="max-w-md mx-auto bg-[#0A3338]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.5)] flex items-stretch overflow-hidden mt-4">
+
+                <a href="{{ route('booking.service') }}"
+                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.service') ? 'text-cyan-300' : 'text-white/40' }}">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1V9.5z" />
+                    </svg>
+                    <span class="text-[11px] font-medium">Services</span>
+                </a>
+
+                <a href="{{ route('booking.my-appointments') }}"
+                    class="flex-1 flex flex-col items-center gap-1 py-3 transition {{ request()->routeIs('booking.my-appointments') ? 'text-cyan-300' : 'text-white/40' }}">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                        <rect x="3" y="5" width="18" height="16" rx="2" />
+                        <path stroke-linecap="round" d="M8 3v4M16 3v4M3 10h18" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 14.5l2 2 4-4" />
+                    </svg>
+                    <span class="text-[11px] font-medium">Appointment</span>
+                </a>
+
+                <form method="POST" action="{{ route('booking.logout') }}" class="flex-1">
+                    @csrf
+                    <button type="submit" class="w-full h-full flex flex-col items-center gap-1 py-3 text-white/40 transition">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                        </svg>
+                        <span class="text-[11px] font-medium">Log out</span>
+                    </button>
+                </form>
+
+            </div>
+        </nav>
+        @endif
+
+    </div>
+</body>
+
 </html>
 </file>
 
@@ -4639,36 +4240,6 @@ CHANGELOG.md export-ignore
 .styleci.yml export-ignore
 </file>
 
-<file path=".gitignore">
-*.log
-.DS_Store
-.env
-.env.backup
-.env.production
-.phpactor.json
-.phpunit.result.cache
-/.codex
-/.cursor/
-/.idea
-/.nova
-/.phpunit.cache
-/.vscode
-/.zed
-/auth.json
-/node_modules
-/public/build
-/public/fonts-manifest.dev.json
-/public/hot
-/public/storage
-/storage/*.key
-/storage/pail
-/vendor
-_ide_helper.php
-Homestead.json
-Homestead.yaml
-Thumbs.db
-</file>
-
 <file path=".npmrc">
 ignore-scripts=true
 audit=true
@@ -4693,24 +4264,6 @@ $app = require_once __DIR__.'/bootstrap/app.php';
 $status = $app->handleCommand(new ArgvInput);
 
 exit($status);
-</file>
-
-<file path="description.txt">
-Bonjour,
-Je m'appelle Karim, je suis propriétaire du Salon Yasmine, un salon de coiffure et esthétique à Annaba. On est 3 coiffeuses/coiffeurs qui travaillons ensemble.
-Mon problème actuellement :
-Les clients m'appellent toute la journée pour prendre rendez-vous, et je gère tout sur un cahier papier. Résultat : je me trompe souvent, il m'arrive de mettre deux clients à la même heure, ou d'avoir un créneau vide alors qu'une coiffeuse est disponible. C'est devenu ingérable.
-Ce dont j'ai besoin :
-Que le client puisse réserver lui-même depuis son téléphone, sans m'appeler, et voir en temps réel les créneaux disponibles
-Une vue d'ensemble pour moi : qui vient, à quelle heure, avec quelle coiffeuse
-Un planning séparé pour chaque coiffeuse (pas tout mélangé)
-Pouvoir ajouter ou modifier les services (coupe, brushing, coloration...), avec leur prix et leur durée
-Suivre les rendez-vous honorés et les no-shows (certains clients réservent et ne viennent pas)
-Avoir les coordonnées de chaque client (téléphone, email) pour pouvoir leur envoyer des promotions ou des rappels plus tard
-Questions importantes :
-Est-ce que le client peut réserver directement depuis son téléphone sans télécharger d'application ? J'ai peur que les clients plus âgés ne sachent pas installer une app.
-Le design doit être élégant — mon salon a une décoration haut de gamme, le site doit refléter ça.
-Combien de temps ça prendrait, et quel serait le tarif approximatif ?
 </file>
 
 <file path="laravel">
@@ -4764,67 +4317,6 @@ export default {
 };
 </file>
 
-<file path="README.md">
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
-
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
-
-## About Laravel
-
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
-
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
-```
-
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
-</file>
-
 <file path="tailwind.config.js">
 import defaultTheme from 'tailwindcss/defaultTheme';
 import forms from '@tailwindcss/forms';
@@ -4847,6 +4339,297 @@ export default {
 
     plugins: [forms],
 };
+</file>
+
+<file path="app/Http/Controllers/Booking/BookingController.php">
+<?php
+
+namespace App\Http\Controllers\Booking;
+
+use App\Enums\AppointmentStatus;
+use App\Http\Controllers\Controller;
+use App\Models\Appointment;
+use App\Models\Service;
+use App\Models\ServiceAddon;
+use App\Models\User;
+use App\Services\AvailabilityService;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\View\View;
+
+class BookingController extends Controller
+{
+    public function create(): View
+    {
+        return view('booking.start');
+    }
+
+    public function store(Request $request): RedirectResponse
+    {
+        $request->merge([
+            'phone' => preg_replace('/\s+/', '', (string) $request->input('phone')),
+        ]);
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'phone' => ['required', 'string', 'regex:/^0[567][0-9]{8}$/'],
+        ]);
+
+        $client = User::firstOrCreate(
+            ['phone' => $validated['phone']],
+            ['name' => $validated['name']],
+        );
+
+        session(['booking.client_id' => $client->id]);
+
+        return redirect()->route('booking.service');
+    }
+
+    public function selectService(): View|RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $services = Service::with('addons')->get();
+
+        return view('booking.service', ['services' => $services]);
+    }
+
+    public function storeService(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $validated = $request->validate([
+            'service_id' => ['required', 'exists:services,id'],
+            'addon_ids' => ['array'],
+            'addon_ids.*' => [
+                Rule::exists('service_addons', 'id')
+                    ->where('service_id', $request->input('service_id')),
+            ],
+        ]);
+
+        session([
+            'booking.service_id' => $validated['service_id'],
+            'booking.addon_ids' => $validated['addon_ids'] ?? [],
+        ]);
+
+        return redirect()->route('booking.staff');
+    }
+
+    public function selectStaff(): View|RedirectResponse
+    {
+        if (! session()->has('booking.service_id')) {
+            return redirect()->route('booking.service');
+        }
+
+        $staff = User::where('role', 'staff')->get();
+
+        return view('booking.staff', ['staff' => $staff]);
+    }
+
+    public function storeStaff(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.service_id')) {
+            return redirect()->route('booking.service');
+        }
+
+        $validated = $request->validate([
+            'staff_id' => ['required', Rule::exists('users', 'id')->where('role', 'staff')],
+        ]);
+
+        session(['booking.staff_id' => $validated['staff_id']]);
+
+        return redirect()->route('booking.slots');
+    }
+
+    public function selectSlot(Request $request): View|RedirectResponse
+    {
+        if (! session()->has('booking.staff_id')) {
+            return redirect()->route('booking.staff');
+        }
+
+        $staff = User::findOrFail(session('booking.staff_id'));
+        $service = Service::findOrFail(session('booking.service_id'));
+        $addonIds = session('booking.addon_ids', []);
+        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+
+        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
+        $totalPrice = $service->base_price + $addons->sum('extra_price');
+
+        $selectedDate = $request->query('date')
+            ? Carbon::parse($request->query('date'))
+            : Carbon::today();
+
+        $days = collect(range(0, 13))->map(
+            fn($i) => Carbon::today()->addDays($i)
+        );
+
+        $slots = app(AvailabilityService::class)->slotsFor($staff, $selectedDate, $totalDuration);
+
+        return view('booking.slots', [
+            'staff' => $staff,
+            'service' => $service,
+            'addons' => $addons,
+            'totalDuration' => $totalDuration,
+            'totalPrice' => $totalPrice,
+            'days' => $days,
+            'selectedDate' => $selectedDate,
+            'slots' => $slots,
+        ]);
+    }
+
+    public function storeAppointment(Request $request): RedirectResponse
+    {
+        if (! session()->has('booking.staff_id')) {
+            return redirect()->route('booking.staff');
+        }
+
+        $validated = $request->validate([
+            'start_time' => ['required', 'date'],
+        ]);
+
+        $clientId = session('booking.client_id');
+        $staffId = session('booking.staff_id');
+        $serviceId = session('booking.service_id');
+        $addonIds = session('booking.addon_ids', []);
+
+        $service = Service::findOrFail($serviceId);
+        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+
+        $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
+        $totalPrice = $service->base_price + $addons->sum('extra_price');
+
+        $startTime = Carbon::parse($validated['start_time']);
+        $endTime = $startTime->copy()->addMinutes($totalDuration);
+
+        $appointment = DB::transaction(function () use (
+            $clientId,
+            $staffId,
+            $serviceId,
+            $startTime,
+            $endTime,
+            $totalPrice,
+            $totalDuration
+        ) {
+            $staff = User::where('id', $staffId)->where('role', 'staff')->firstOrFail();
+
+            // Re-run the availability engine, using the same rules the
+            // client saw when browsing — never trust the submitted
+            // start_time just because it matches the expected format.
+            $validSlots = app(AvailabilityService::class)
+                ->slotsFor($staff, $startTime->copy()->startOfDay(), $totalDuration);
+
+            $isLegitimateSlot = collect($validSlots)->contains(
+                fn($slot) => $slot->equalTo($startTime)
+            );
+
+            if (! $isLegitimateSlot) {
+                return null;
+            }
+
+            // Lock any of this staff member's appointments that day, so no
+            // other request can insert a conflicting one while we check.
+            $conflictExists = Appointment::where('staff_id', $staffId)
+                ->where('status', '!=', AppointmentStatus::Cancelled->value)
+                ->where('start_time', '<', $endTime)
+                ->where('end_time', '>', $startTime)
+                ->lockForUpdate()
+                ->exists();
+
+            if ($conflictExists) {
+                return null;
+            }
+
+            return Appointment::create([
+                'client_id' => $clientId,
+                'staff_id' => $staffId,
+                'service_id' => $serviceId,
+                'start_time' => $startTime,
+                'end_time' => $endTime,
+                'total_price' => $totalPrice,
+                'status' => AppointmentStatus::Confirmed->value,
+            ]);
+        });
+
+        if (! $appointment) {
+            return redirect()->route('booking.slots')
+                ->with('error', 'That slot is no longer available — please pick another.');
+        }
+
+        $appointment->addons()->attach($addonIds);
+
+        // Client identity persists across bookings — only the
+        // choices specific to this one booking get cleared.
+        session()->forget([
+            'booking.service_id',
+            'booking.addon_ids',
+            'booking.staff_id',
+        ]);
+
+        session(['booking.confirmed_id' => $appointment->id]);
+
+        return redirect()->route('booking.confirmation');
+    }
+
+    public function confirmation(): View|RedirectResponse
+    {
+        if (! session()->has('booking.confirmed_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $appointment = Appointment::with(['service', 'staff'])
+            ->findOrFail(session()->pull('booking.confirmed_id'));
+
+        return view('booking.confirmation', ['appointment' => $appointment]);
+    }
+
+    public function myAppointments(): View|RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        $appointments = Appointment::with(['service', 'staff'])
+            ->where('client_id', session('booking.client_id'))
+            ->where('status', AppointmentStatus::Confirmed->value)
+            ->where('start_time', '>=', now())
+            ->orderBy('start_time')
+            ->get();
+
+        return view('booking.my-appointments', ['appointments' => $appointments]);
+    }
+
+    public function cancelAppointment(Appointment $appointment): RedirectResponse
+    {
+        if (! session()->has('booking.client_id')) {
+            return redirect()->route('booking.start');
+        }
+
+        // Ownership check — a client can only cancel their own
+        // appointment, never one referenced by guessing an ID.
+        if ($appointment->client_id !== session('booking.client_id')) {
+            abort(403);
+        }
+
+        $appointment->update(['status' => AppointmentStatus::Cancelled->value]);
+
+        return redirect()->route('booking.my-appointments')
+            ->with('status', 'Appointment cancelled.');
+    }
+
+    public function logout(): RedirectResponse
+    {
+        session()->forget('booking.client_id');
+
+        return redirect()->route('booking.start');
+    }
+}
 </file>
 
 <file path="app/Models/Appointment.php">
@@ -4924,6 +4707,78 @@ class Appointment extends Model
     public function addons(): BelongsToMany
     {
         return $this->belongsToMany(ServiceAddon::class, 'appointment_addon');
+    }
+}
+</file>
+
+<file path="app/Models/Service.php">
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Service extends Model
+{
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'name',
+        'description',
+        'photo',
+        'base_price',
+        'duration_minutes',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'base_price' => 'decimal:2',
+            'duration_minutes' => 'integer',
+        ];
+    }
+
+    /**
+     * Resolve a usable photo URL whether `photo` is a full external
+     * URL (used for seeded placeholders) or a local storage path
+     * (used once real uploads exist).
+     */
+    protected function photoUrl(): Attribute
+    {
+        return Attribute::get(
+            fn() => str_starts_with($this->photo, 'http')
+                ? $this->photo
+                : asset('storage/' . $this->photo)
+        );
+    }
+
+    /**
+     * Get the addons for the service.
+     */
+    public function addons(): HasMany
+    {
+        return $this->hasMany(ServiceAddon::class);
+    }
+
+    /**
+     * Get the appointments for the service.
+     */
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class);
     }
 }
 </file>
@@ -5091,6 +4946,41 @@ return new class extends Migration
 };
 </file>
 
+<file path="database/migrations/2026_07_26_013801_create_services_table.php">
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('services', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->text('description')->nullable();
+            $table->string('photo');
+            $table->decimal('base_price', 8, 2);
+            $table->integer('duration_minutes');
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('services');
+    }
+};
+</file>
+
 <file path="database/migrations/2026_07_26_013804_create_appointments_table.php">
 <?php
 
@@ -5127,6 +5017,374 @@ return new class extends Migration
         Schema::dropIfExists('appointments');
     }
 };
+</file>
+
+<file path="resources/css/app.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+</file>
+
+<file path="resources/js/app.js">
+import Alpine from 'alpinejs';
+
+window.Alpine = Alpine;
+
+Alpine.start();
+</file>
+
+<file path=".gitignore">
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.phpactor.json
+.phpunit.result.cache
+/.codex
+/.cursor/
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+/public/build
+/public/fonts-manifest.dev.json
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/vendor
+_ide_helper.php
+Homestead.json
+Homestead.yaml
+Thumbs.db
+/.env.testing
+.phpunit.cache/
+</file>
+
+<file path="compose.yaml">
+services:
+    laravel.test:
+        build:
+            context: ./vendor/laravel/sail/runtimes/8.5
+            dockerfile: Dockerfile
+            args:
+                WWWGROUP: '${WWWGROUP}'
+        image: sail-8.5/app
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        ports:
+            - '${APP_PORT:-80}:80'
+            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
+        environment:
+            WWWUSER: '${WWWUSER}'
+            LARAVEL_SAIL: 1
+            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
+            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
+            IGNITION_LOCAL_SITES_PATH: '${PWD}'
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            - mysql
+            - redis
+            - mailpit
+    mysql:
+        image: 'mysql:8.4'
+        ports:
+            - '${FORWARD_DB_PORT:-3306}:3306'
+        environment:
+            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ROOT_HOST: '%'
+            MYSQL_DATABASE: '${DB_DATABASE}'
+            MYSQL_USER: '${DB_USERNAME}'
+            MYSQL_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ALLOW_EMPTY_PASSWORD: 1
+            MYSQL_EXTRA_OPTIONS: '${MYSQL_EXTRA_OPTIONS:-}'
+        volumes:
+            - 'sail-mysql:/var/lib/mysql'
+            - './vendor/laravel/sail/database/mysql/create-testing-database.sh:/docker-entrypoint-initdb.d/10-create-testing-database.sh'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD
+                - mysqladmin
+                - ping
+                - '-p${DB_PASSWORD}'
+            retries: 3
+            timeout: 5s
+    redis:
+        image: 'redis:alpine'
+        ports:
+            - '${FORWARD_REDIS_PORT:-6379}:6379'
+        volumes:
+            - 'sail-redis:/data'
+        networks:
+            - sail
+        healthcheck:
+            test:
+                - CMD
+                - redis-cli
+                - ping
+            retries: 3
+            timeout: 5s
+    mailpit:
+        image: 'axllent/mailpit:latest'
+        ports:
+            - '${FORWARD_MAILPIT_PORT:-1025}:1025'
+            - '${FORWARD_MAILPIT_DASHBOARD_PORT:-8025}:8025'
+        networks:
+            - sail
+    adminer:
+        image: 'adminer:latest'
+        ports:
+            - '8080:8080'
+        networks:
+            - sail
+        depends_on:
+            - mysql
+networks:
+    sail:
+        driver: bridge
+volumes:
+    sail-mysql:
+        driver: local
+    sail-redis:
+        driver: local
+</file>
+
+<file path="composer.json">
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "laravel/laravel",
+    "type": "project",
+    "description": "The skeleton application for the Laravel framework.",
+    "keywords": ["laravel", "framework"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "laravel/framework": "^13.8",
+        "laravel/tinker": "^3.0"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "laravel/breeze": "^2.4",
+        "laravel/pail": "^1.2.5",
+        "laravel/pao": "^1.0.6",
+        "laravel/pint": "^1.27",
+        "laravel/sail": "^1.64",
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.6",
+        "phpunit/phpunit": "^12.5.12"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "setup": [
+            "composer install",
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
+            "@php artisan key:generate",
+            "@php artisan migrate --force",
+            "npm install --ignore-scripts",
+            "npm run build"
+        ],
+        "dev": [
+            "Composer\\Config::disableProcessTimeout",
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve\" \"php artisan queue:listen --tries=1 --timeout=0\" \"php artisan pail --timeout=0\" \"npm run dev\" --names=server,queue,logs,vite --kill-others"
+        ],
+        "test": [
+            "@php artisan config:clear --ansi @no_additional_args",
+            "@php artisan test"
+        ],
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi"
+        ],
+        "post-update-cmd": [
+            "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
+        ],
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-create-project-cmd": [
+            "@php artisan key:generate --ansi",
+            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
+            "@php artisan migrate --graceful --ansi"
+        ],
+        "pre-package-uninstall": [
+            "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
+</file>
+
+<file path="package.json">
+{
+    "$schema": "https://www.schemastore.org/package.json",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "dev": "vite"
+    },
+    "devDependencies": {
+        "@tailwindcss/forms": "^0.5.2",
+        "@tailwindcss/vite": "^4.0.0",
+        "alpinejs": "^3.4.2",
+        "autoprefixer": "^10.4.2",
+        "concurrently": "^9.0.1",
+        "laravel-vite-plugin": "^3.1",
+        "postcss": "^8.4.31",
+        "tailwindcss": "^3.1.0",
+        "vite": "^8.0.0"
+    }
+}
+</file>
+
+<file path="README.md">
+# Salon Booking System
+
+A real-time appointment booking system built for a small hair & beauty salon, replacing a paper notebook that was causing double-bookings and scheduling chaos. Built with **Laravel 13**, **Blade**, **Tailwind CSS**, and **Alpine.js**.
+
+> This is a portfolio project. It simulates a real freelance brief (translated below) and was built end-to-end — schema design, business logic, and UI — as a demonstration of practical backend and frontend engineering, not a tutorial clone.
+
+## The brief
+
+The (fictional) client, a salon owner in Algeria, described this problem:
+
+> Clients call me all day to book appointments, and I manage everything on a paper notebook. As a result, I make mistakes often — sometimes I put two clients at the same time, or I have an empty slot while a stylist is available. It's become unmanageable.
+
+Requirements that came out of that conversation:
+
+- Clients should be able to book themselves from their phone — **no app download**, since older clients may not know how to install one
+- Real-time slot availability, so no more double-booked appointments
+- Each stylist should have their **own independent schedule**, not one shared calendar
+- Services (haircut, coloring, etc.) need configurable price and duration
+- Track completed appointments vs. no-shows
+- Design should feel upscale, matching a high-end salon — not a generic form
+
+## What's implemented
+
+This repository covers the **complete client-facing booking flow**, end to end:
+
+1. **Client identification** — name + phone, no account or password required. Returning clients are recognized automatically by phone number (`firstOrCreate`).
+2. **Service selection** — browsable service cards with photo, description, price, and duration, plus optional add-ons per service.
+3. **Stylist selection** — pick a specific staff member (not auto-assigned).
+4. **Real-time availability** — browse a 14-day window, see only the time slots that are actually bookable for that stylist and service duration.
+5. **Booking confirmation** — a summary (service, add-ons, stylist, time, total price) before committing.
+6. **Race-condition-safe booking** — the appointment is only created after re-validating availability inside a locked database transaction (see below).
+7. **Manage upcoming appointments** — clients can view and cancel their own booking without creating an account.
+
+**Not yet built** (deliberately out of scope for this phase): the owner/staff admin dashboard, SMS/email reminders, and multi-day recurring schedule exceptions (e.g. a stylist taking a single day off outside their normal pattern).
+
+## Architecture highlights
+
+### The availability engine
+
+The core problem: given a stylist, a date, and a service duration, compute every legitimate time this appointment could start — accounting for working hours _and_ existing bookings.
+
+`app/Services/AvailabilityService.php` solves this in three steps rather than checking every minute of the day one at a time:
+
+1. **Resolve the working window** for that day from the stylist's recurring weekly schedule (`StaffSchedule`).
+2. **Invert existing appointments into free gaps** — a single forward sweep through the day's bookings, turning "busy ranges" into "free ranges" between them. Back-to-back appointments correctly produce zero gap between them (a common off-by-one mistake this avoids).
+3. **Generate bookable slots within each gap**, at a fixed interval, only where the _entire_ service duration (including add-ons) still fits before the gap closes — a 90-minute coloring service can't start 20 minutes before closing time, even though that moment is technically "free."
+
+### Preventing double-bookings under concurrency
+
+Showing an available slot and actually booking it are two different moments in time — two clients can view the same free slot simultaneously. The final booking step (`BookingController::storeAppointment`) handles this deliberately:
+
+- The chosen time is **re-validated against the availability engine itself** server-side — the client's browser is never trusted to submit a legitimate slot just because it matches the expected format.
+- The conflict check and the appointment creation both happen inside a **single database transaction using `lockForUpdate()`**, so a second concurrent request checking the same stylist's schedule is forced to wait until the first request's transaction fully resolves — preventing both from seeing a stale "still free" result and creating overlapping appointments.
+
+### Security: validating relationships, not just existence
+
+A few validation rules go beyond "does this ID exist" to "does this ID make sense _in this context_" — e.g. confirming a submitted `staff_id` actually belongs to a user with the `staff` role, and that a chosen add-on actually belongs to the service being booked, not just any service in the database. IDs referencing _which row_ are trusted from the client; anything affecting price, duration, or business rules is always recomputed server-side.
+
+### Session-based booking wizard
+
+Rather than a single giant form, the flow is a multi-step session-backed wizard — each step validates that the required prior steps were completed (you can't reach the stylist picker without a selected service, etc.) and redirects to the earliest missing step rather than restarting the whole flow.
+
+## Tech stack
+
+- **Laravel 13** (PHP)
+- **Blade** templates, no separate frontend framework/build for logic — kept deliberately simple where a full SPA wasn't warranted
+- **Tailwind CSS**, mobile-first, with a distinct dark/cyan visual theme for client-facing pages vs. a lighter theme for staff/owner auth
+- **Alpine.js** for lightweight interactivity (modals, panels) without a heavier JS framework
+- **MySQL**
+
+## Setup
+
+```bash
+git clone <this-repo>
+cd <project-folder>
+cp .env.example .env
+composer install
+./vendor/bin/sail up -d
+sail artisan key:generate
+sail artisan migrate:fresh --seed
+sail npm install
+sail npm run dev
+```
+
+Visit `http://localhost/book` to start a booking as a client.
+
+Seeded test accounts (see `database/seeders/DatabaseSeeder.php`):
+
+- Owner: `karim@salonyasmine.test` / `password`
+- Staff: `yasmine@salonyasmine.test` / `password`, `sara@salonyasmine.test` / `password`
+
+## Roadmap
+
+- [ ] Owner/staff dashboard (calendar overview, per-stylist schedule view)
+- [ ] Service/staff CRUD for the owner
+- [ ] No-show tracking and reporting
+- [ ] SMS/email appointment reminders
+- [ ] Per-date schedule exceptions (holidays, sick days)
+</file>
+
+<file path="vite.config.js">
+import { defineConfig } from 'vite';
+import laravel from 'laravel-vite-plugin';
+
+export default defineConfig({
+    plugins: [
+        laravel({
+            input: ['resources/css/app.css', 'resources/js/app.js'],
+            refresh: true,
+        }),
+    ],
+});
 </file>
 
 <file path="database/seeders/DatabaseSeeder.php">
@@ -5348,20 +5606,6 @@ class DatabaseSeeder extends Seeder
 }
 </file>
 
-<file path="resources/css/app.css">
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-</file>
-
-<file path="resources/js/app.js">
-import Alpine from 'alpinejs';
-
-window.Alpine = Alpine;
-
-Alpine.start();
-</file>
-
 <file path="routes/web.php">
 <?php
 
@@ -5397,227 +5641,6 @@ Route::middleware('auth')->group(function () {
 });
 
 require __DIR__ . '/auth.php';
-</file>
-
-<file path="compose.yaml">
-services:
-    laravel.test:
-        build:
-            context: ./vendor/laravel/sail/runtimes/8.5
-            dockerfile: Dockerfile
-            args:
-                WWWGROUP: '${WWWGROUP}'
-        image: sail-8.5/app
-        extra_hosts:
-            - 'host.docker.internal:host-gateway'
-        ports:
-            - '${APP_PORT:-80}:80'
-            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
-        environment:
-            WWWUSER: '${WWWUSER}'
-            LARAVEL_SAIL: 1
-            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
-            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
-            IGNITION_LOCAL_SITES_PATH: '${PWD}'
-        volumes:
-            - '.:/var/www/html'
-        networks:
-            - sail
-        depends_on:
-            - mysql
-            - redis
-            - mailpit
-    mysql:
-        image: 'mysql:8.4'
-        ports:
-            - '${FORWARD_DB_PORT:-3306}:3306'
-        environment:
-            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
-            MYSQL_ROOT_HOST: '%'
-            MYSQL_DATABASE: '${DB_DATABASE}'
-            MYSQL_USER: '${DB_USERNAME}'
-            MYSQL_PASSWORD: '${DB_PASSWORD}'
-            MYSQL_ALLOW_EMPTY_PASSWORD: 1
-            MYSQL_EXTRA_OPTIONS: '${MYSQL_EXTRA_OPTIONS:-}'
-        volumes:
-            - 'sail-mysql:/var/lib/mysql'
-            - './vendor/laravel/sail/database/mysql/create-testing-database.sh:/docker-entrypoint-initdb.d/10-create-testing-database.sh'
-        networks:
-            - sail
-        healthcheck:
-            test:
-                - CMD
-                - mysqladmin
-                - ping
-                - '-p${DB_PASSWORD}'
-            retries: 3
-            timeout: 5s
-    redis:
-        image: 'redis:alpine'
-        ports:
-            - '${FORWARD_REDIS_PORT:-6379}:6379'
-        volumes:
-            - 'sail-redis:/data'
-        networks:
-            - sail
-        healthcheck:
-            test:
-                - CMD
-                - redis-cli
-                - ping
-            retries: 3
-            timeout: 5s
-    mailpit:
-        image: 'axllent/mailpit:latest'
-        ports:
-            - '${FORWARD_MAILPIT_PORT:-1025}:1025'
-            - '${FORWARD_MAILPIT_DASHBOARD_PORT:-8025}:8025'
-        networks:
-            - sail
-    adminer:
-        image: 'adminer:latest'
-        ports:
-            - '8080:8080'
-        networks:
-            - sail
-        depends_on:
-            - mysql
-networks:
-    sail:
-        driver: bridge
-volumes:
-    sail-mysql:
-        driver: local
-    sail-redis:
-        driver: local
-</file>
-
-<file path="composer.json">
-{
-    "$schema": "https://getcomposer.org/schema.json",
-    "name": "laravel/laravel",
-    "type": "project",
-    "description": "The skeleton application for the Laravel framework.",
-    "keywords": ["laravel", "framework"],
-    "license": "MIT",
-    "require": {
-        "php": "^8.3",
-        "laravel/framework": "^13.8",
-        "laravel/tinker": "^3.0"
-    },
-    "require-dev": {
-        "fakerphp/faker": "^1.23",
-        "laravel/breeze": "^2.4",
-        "laravel/pail": "^1.2.5",
-        "laravel/pao": "^1.0.6",
-        "laravel/pint": "^1.27",
-        "laravel/sail": "^1.64",
-        "mockery/mockery": "^1.6",
-        "nunomaduro/collision": "^8.6",
-        "phpunit/phpunit": "^12.5.12"
-    },
-    "autoload": {
-        "psr-4": {
-            "App\\": "app/",
-            "Database\\Factories\\": "database/factories/",
-            "Database\\Seeders\\": "database/seeders/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Tests\\": "tests/"
-        }
-    },
-    "scripts": {
-        "setup": [
-            "composer install",
-            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
-            "@php artisan key:generate",
-            "@php artisan migrate --force",
-            "npm install --ignore-scripts",
-            "npm run build"
-        ],
-        "dev": [
-            "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve\" \"php artisan queue:listen --tries=1 --timeout=0\" \"php artisan pail --timeout=0\" \"npm run dev\" --names=server,queue,logs,vite --kill-others"
-        ],
-        "test": [
-            "@php artisan config:clear --ansi @no_additional_args",
-            "@php artisan test"
-        ],
-        "post-autoload-dump": [
-            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
-            "@php artisan package:discover --ansi"
-        ],
-        "post-update-cmd": [
-            "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
-        ],
-        "post-root-package-install": [
-            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
-        ],
-        "post-create-project-cmd": [
-            "@php artisan key:generate --ansi",
-            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
-            "@php artisan migrate --graceful --ansi"
-        ],
-        "pre-package-uninstall": [
-            "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
-        ]
-    },
-    "extra": {
-        "laravel": {
-            "dont-discover": []
-        }
-    },
-    "config": {
-        "optimize-autoloader": true,
-        "preferred-install": "dist",
-        "sort-packages": true,
-        "allow-plugins": {
-            "pestphp/pest-plugin": true,
-            "php-http/discovery": true
-        }
-    },
-    "minimum-stability": "stable",
-    "prefer-stable": true
-}
-</file>
-
-<file path="package.json">
-{
-    "$schema": "https://www.schemastore.org/package.json",
-    "private": true,
-    "type": "module",
-    "scripts": {
-        "build": "vite build",
-        "dev": "vite"
-    },
-    "devDependencies": {
-        "@tailwindcss/forms": "^0.5.2",
-        "@tailwindcss/vite": "^4.0.0",
-        "alpinejs": "^3.4.2",
-        "autoprefixer": "^10.4.2",
-        "concurrently": "^9.0.1",
-        "laravel-vite-plugin": "^3.1",
-        "postcss": "^8.4.31",
-        "tailwindcss": "^3.1.0",
-        "vite": "^8.0.0"
-    }
-}
-</file>
-
-<file path="vite.config.js">
-import { defineConfig } from 'vite';
-import laravel from 'laravel-vite-plugin';
-
-export default defineConfig({
-    plugins: [
-        laravel({
-            input: ['resources/css/app.css', 'resources/js/app.js'],
-            refresh: true,
-        }),
-    ],
-});
 </file>
 
 </files>
