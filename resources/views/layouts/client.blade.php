@@ -13,7 +13,7 @@
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 
-<body class="font-sans text-slate-800 antialiased" style="background-color:#072A2E;">
+<body class="font-sans text-slate-800 antialiased" style="background-color:#072A2E;" x-data="{ showLogoutModal: false, logoutForm: null }" @keydown.escape="showLogoutModal = false">
 
     @if (session()->has('booking.client_id'))
     {{-- Desktop top navbar --}}
@@ -35,7 +35,7 @@
                 </a>
             </div>
 
-            <form method="POST" action="{{ route('booking.logout') }}">
+            <form method="POST" action="{{ route('booking.logout') }}" @submit.prevent="logoutForm = $event.target; showLogoutModal = true">
                 @csrf
                 <button type="submit" class="flex items-center gap-2 text-sm font-medium text-white/60 hover:text-red-400 transition">
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
@@ -76,7 +76,7 @@
                     <span class="text-[11px] font-medium">Appointment</span>
                 </a>
 
-                <form method="POST" action="{{ route('booking.logout') }}" class="flex-1">
+                <form method="POST" action="{{ route('booking.logout') }}" class="flex-1" @submit.prevent="logoutForm = $event.target; showLogoutModal = true">
                     @csrf
                     <button type="submit" class="w-full h-full flex flex-col items-center gap-1 py-3 text-white/40 transition">
                         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
@@ -90,6 +90,22 @@
         </nav>
         @endif
 
+    </div>
+
+    <div x-cloak x-show="showLogoutModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title" @click.self="showLogoutModal = false">
+        <div x-show="showLogoutModal" x-transition class="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0A3338] p-6 text-white shadow-2xl">
+            <h2 id="logout-modal-title" class="text-lg font-semibold">Log out?</h2>
+            <p class="mt-2 text-sm leading-6 text-white/60">Are you sure you want to log out of your booking session?</p>
+
+            <div class="mt-6 flex justify-end gap-3">
+                <button type="button" class="rounded-lg px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 hover:text-white" @click="showLogoutModal = false">
+                    Cancel
+                </button>
+                <button type="button" class="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-400" @click="logoutForm.submit()">
+                    Log out
+                </button>
+            </div>
+        </div>
     </div>
 </body>
 
