@@ -36,13 +36,7 @@
             </label>
         </div>
 
-        <div class="flex items-center justify-between mt-6">
-            @if (Route::has('password.request'))
-            <a class="text-sm text-slate-600 hover:text-slate-800 underline underline-offset-2" href="{{ route('password.request') }}">
-                {{ __('Forgot your password?') }}
-            </a>
-            @endif
-
+        <div class="flex items-center justify-end mt-6">
             <x-primary-button class="!bg-[#2F8F7A] hover:!bg-[#267566] focus:!ring-[#2F8F7A]/30 active:!bg-[#1F5C50]">
                 {{ __('Log in') }}
             </x-primary-button>
