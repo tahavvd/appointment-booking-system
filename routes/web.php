@@ -7,10 +7,6 @@ Route::get('/', function () {
     return redirect()->route('booking.start');
 });
 
-Route::get('/home', function () {
-    return 'Logged in.';
-})->middleware('auth')->name('home');
-
 Route::get('/book', [BookingController::class, 'create'])->name('booking.start');
 Route::post('/book', [BookingController::class, 'store'])->name('booking.store');
 Route::get('/book/service', [BookingController::class, 'selectService'])->name('booking.service');
@@ -26,3 +22,5 @@ Route::post('/book/logout', [BookingController::class, 'logout'])->name('booking
 
 
 require __DIR__ . '/auth.php';
+require __DIR__ . '/admin.php';
+require __DIR__ . '/staff.php';
