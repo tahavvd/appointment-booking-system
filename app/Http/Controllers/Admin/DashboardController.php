@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Enums\AppointmentStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
+use App\Models\Service;
+use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\View\View;
 
@@ -12,15 +14,23 @@ class DashboardController extends Controller
 {
     public function index(): View
     {
-        $todayCount = Appointment::whereDate('start_time', today())
+        $today = today();
+
+        $todayAppointments = Appointment::with(['client', 'staff', 'service'])
+            ->whereDate('start_time', $today)
+            ->orderBy('start_time')
+            ->get();
+
+        $todayCount = $todayAppointments
             ->where('status', '!=', AppointmentStatus::Cancelled->value)
             ->count();
+
+        $activeStaffCount = User::where('role', 'staff')->count();
+        $servicesCount = Service::count();
 
         $startOfWeek = Carbon::now()->startOfWeek();
         $endOfWeek = Carbon::now()->endOfWeek();
 
-        // Revenue only counts appointments that were actually honoured —
-        // cancellations and no-shows never generated income.
         $weekAppointments = Appointment::whereBetween('start_time', [$startOfWeek, $endOfWeek])
             ->whereIn('status', [AppointmentStatus::Confirmed->value, AppointmentStatus::Completed->value])
             ->get(['start_time', 'total_price']);
@@ -36,9 +46,13 @@ class DashboardController extends Controller
         });
 
         return view('admin.dashboard', [
+            'todayAppointments' => $todayAppointments,
             'todayCount' => $todayCount,
+            'activeStaffCount' => $activeStaffCount,
+            'servicesCount' => $servicesCount,
             'revenueByDay' => $revenueByDay,
             'weekRevenueTotal' => $revenueByDay->sum(),
+            'today' => $today,
         ]);
     }
 }

@@ -36,4 +36,21 @@
     <path stroke-linecap="round" d="M9 11h6M9 15h4" />
 </svg>
 @break
+
+@case('cash')
+<svg {{ $attributes->merge(['class' => 'w-5 h-5']) }} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+    <rect x="2.5" y="6.5" width="19" height="11" rx="2" />
+    <circle cx="12" cy="12" r="2.4" />
+    <path stroke-linecap="round" d="M5.5 9v0M18.5 15v0" />
+</svg>
+@break
+
+@case('clock')
+<svg {{ $attributes->merge(['class' => 'w-5 h-5']) }} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+    <circle cx="12" cy="12" r="9" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 3" />
+</svg>
+@break
+
+
 @endswitch
