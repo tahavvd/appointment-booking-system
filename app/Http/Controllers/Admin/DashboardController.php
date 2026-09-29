@@ -28,8 +28,8 @@ class DashboardController extends Controller
         $activeStaffCount = User::where('role', 'staff')->count();
         $servicesCount = Service::count();
 
-        $startOfWeek = Carbon::now()->startOfWeek();
-        $endOfWeek = Carbon::now()->endOfWeek();
+        $startOfWeek = Carbon::now()->startOfWeek(Carbon::SATURDAY);
+        $endOfWeek = Carbon::now()->endOfWeek(Carbon::SATURDAY);
 
         $weekAppointments = Appointment::whereBetween('start_time', [$startOfWeek, $endOfWeek])
             ->whereIn('status', [AppointmentStatus::Confirmed->value, AppointmentStatus::Completed->value])
