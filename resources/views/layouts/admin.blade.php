@@ -26,8 +26,8 @@
         class="fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col transform transition-transform duration-200 ease-in-out -translate-x-full lg:translate-x-0"
         :class="{ 'translate-x-0': sidebarOpen }">
 
-        <div class="h-16 flex items-center gap-2 px-6 border-b border-slate-100">
-            <span class="w-2.5 h-2.5 rounded-full bg-teal-600"></span>
+        <div class="h-16 flex items-center gap-5 px-1 border-b border-slate-100">
+            <x-app-logo class="w-7 h-7" />
             <span class="text-lg tracking-tight text-slate-900" style="font-family: 'Fraunces', serif;">
                 {{ config('app.name', 'Laravel') }}
             </span>
