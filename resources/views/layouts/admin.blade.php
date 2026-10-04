@@ -7,6 +7,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <title>{{ $title ? $title . ' — ' : '' }}{{ config('app.name', 'Laravel') }}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ asset('logo-icon.svg') }}">
 
     <link rel="preconnect" href="https://fonts.bunny.net">
     <link href="https://fonts.bunny.net/css?family=figtree:400,500,600|fraunces:500,600&display=swap" rel="stylesheet" />
@@ -31,8 +32,8 @@
         :class="{ 'translate-x-0': sidebarOpen }">
 
         {{-- Logo --}}
-        <div class="h-16 flex items-center gap-5 px-1 border-b border-slate-100">
-            <x-app-logo class="w-7 h-7" />
+        <div class="h-16 flex items-center gap-3 px-5 border-b border-slate-100">
+            <x-app-logo class="w-8 h-8" />
 
             <span
                 class="text-lg tracking-tight text-slate-900"
