@@ -1,35 +1,55 @@
 @props(['label', 'value', 'icon', 'href' => null, 'accent' => 'teal'])
 
 @php
-$accents = [
-'teal' => 'bg-teal-50 text-teal-700',
-'amber' => 'bg-amber-50 text-amber-700',
-'slate' => 'bg-slate-100 text-slate-700',
+$styles = [
+'teal' => [
+'icon' => 'bg-teal-50 text-teal-700',
+'label' => 'text-teal-700',
+'link' => 'text-teal-700',
+'hover' => 'hover:border-teal-300',
+],
+'violet' => [
+'icon' => 'bg-violet-50 text-violet-700',
+'label' => 'text-violet-700',
+'link' => 'text-violet-700',
+'hover' => 'hover:border-violet-300',
+],
+'sky' => [
+'icon' => 'bg-sky-50 text-sky-700',
+'label' => 'text-sky-700',
+'link' => 'text-sky-700',
+'hover' => 'hover:border-sky-300',
+],
+'amber' => [
+'icon' => 'bg-amber-50 text-amber-700',
+'label' => 'text-amber-700',
+'link' => 'text-amber-700',
+'hover' => 'hover:border-amber-300',
+],
 ];
+
+$s = $styles[$accent] ?? $styles['teal'];
+$tag = $href ? 'a' : 'div';
 @endphp
 
-@if ($href)
-<a href="{{ $href }}" class="group block bg-white border border-slate-200 rounded-2xl p-5 hover:border-teal-300 hover:shadow-sm transition">
-    @else
-    <div class="bg-white border border-slate-200 rounded-2xl p-5">
-        @endif
+<{{ $tag }}
+    @if ($href) href="{{ $href }}" @endif
+    class="group block bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 {{ $href ? $s['hover'] . ' hover:shadow-sm transition' : '' }}">
 
-        <div class="flex items-start justify-between">
-            <div>
-                <p class="text-sm text-slate-500">{{ $label }}</p>
-                <p class="mt-2 text-3xl font-semibold text-slate-900">{{ $value }}</p>
-            </div>
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center {{ $accents[$accent] ?? $accents['teal'] }}">
-                <x-admin-nav-icon :name="$icon" class="w-5 h-5" />
-            </div>
+    <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+            <p class="text-xs sm:text-sm font-medium {{ $s['label'] }} truncate">{{ $label }}</p>
+            <p class="mt-1 sm:mt-2 text-xl sm:text-3xl font-semibold text-slate-900 truncate">{{ $value }}</p>
         </div>
 
-        @if ($href)
-        <p class="mt-3 text-sm text-teal-700 font-medium opacity-0 group-hover:opacity-100 transition">View details →</p>
-        @endif
+        <div class="w-8 h-8 sm:w-10 sm:h-10 shrink-0 rounded-lg sm:rounded-xl flex items-center justify-center {{ $s['icon'] }}">
+            <x-admin-nav-icon :name="$icon" class="w-4 h-4 sm:w-5 sm:h-5" />
+        </div>
+    </div>
 
-        @if ($href)
-</a>
-@else
-</div>
-@endif
+    @if ($href)
+    <p class="mt-2 sm:mt-3 text-xs sm:text-sm font-medium {{ $s['link'] }} sm:opacity-0 sm:group-hover:opacity-100 transition">
+        View details →
+    </p>
+    @endif
+</{{ $tag }}>

@@ -6,13 +6,13 @@
     </div>
     @endif
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
         <x-admin.stat-card label="Today's appointments" :value="$todayCount" icon="clipboard"
-            :href="route('admin.appointments.index')" />
+            :href="route('admin.appointments.index')" accent="teal" />
         <x-admin.stat-card label="Active staff" :value="$activeStaffCount" icon="users"
-            :href="route('admin.staff.index')" accent="slate" />
+            :href="route('admin.staff.index')" accent="violet" />
         <x-admin.stat-card label="Services offered" :value="$servicesCount" icon="scissors"
-            :href="route('admin.services.index')" accent="slate" />
+            :href="route('admin.services.index')" accent="sky" />
         <x-admin.stat-card label="Revenue this week" :value="number_format($weekRevenueTotal, 0) . ' DA'"
             icon="cash" accent="amber" />
     </div>
