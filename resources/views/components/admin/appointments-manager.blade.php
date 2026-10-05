@@ -216,7 +216,7 @@
     <div x-show="modal.open" x-cloak x-transition.opacity
         class="fixed inset-0 z-[100] flex items-center justify-center p-4">
 
-        <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" @click="close()"></div>
+        <div class="absolute inset-0 bg-slate-900/40" @click="close()"></div>
 
         <div x-show="modal.open" x-transition @click.stop
             class="relative w-full max-w-sm bg-white rounded-2xl shadow-xl border border-slate-200 p-6">
