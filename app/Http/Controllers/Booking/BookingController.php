@@ -84,7 +84,9 @@ class BookingController extends Controller
             return redirect()->route('booking.service');
         }
 
-        $staff = User::where('role', 'staff')->get();
+        $staff = User::where('role', 'staff')
+            ->where('is_active', true)
+            ->get();
 
         return view('booking.staff', ['staff' => $staff]);
     }
@@ -96,7 +98,12 @@ class BookingController extends Controller
         }
 
         $validated = $request->validate([
-            'staff_id' => ['required', Rule::exists('users', 'id')->where('role', 'staff')],
+            'staff_id' => [
+                'required',
+                Rule::exists('users', 'id')
+                    ->where('role', 'staff')
+                    ->where('is_active', true),
+            ],
         ]);
 
         session(['booking.staff_id' => $validated['staff_id']]);
@@ -110,7 +117,18 @@ class BookingController extends Controller
             return redirect()->route('booking.staff');
         }
 
-        $staff = User::findOrFail(session('booking.staff_id'));
+        // If the stylist was deactivated mid-booking, send the client back
+        // to pick someone else instead of showing slots for an inactive account.
+        $staff = User::where('role', 'staff')
+            ->where('is_active', true)
+            ->find(session('booking.staff_id'));
+
+        if (! $staff) {
+            session()->forget('booking.staff_id');
+
+            return redirect()->route('booking.staff');
+        }
+
         $service = Service::findOrFail(session('booking.service_id'));
         $addonIds = session('booking.addon_ids', []);
         $addons = ServiceAddon::whereIn('id', $addonIds)->get();
@@ -173,7 +191,10 @@ class BookingController extends Controller
             $totalPrice,
             $totalDuration
         ) {
-            $staff = User::where('id', $staffId)->where('role', 'staff')->firstOrFail();
+            $staff = User::where('id', $staffId)
+                ->where('role', 'staff')
+                ->where('is_active', true)
+                ->firstOrFail();
 
             // Re-run the availability engine, using the same rules the
             // client saw when browsing — never trust the submitted

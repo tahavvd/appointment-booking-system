@@ -15,6 +15,11 @@ Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->grou
         ->name('appointments.update-status');
 
     Route::get('services', [ServiceController::class, 'index'])->name('services.index');
+
     Route::get('staff', [StaffController::class, 'index'])->name('staff.index');
+    Route::post('staff', [StaffController::class, 'store'])->name('staff.store');
+    Route::put('staff/{staff}', [StaffController::class, 'update'])->name('staff.update');
+    Route::patch('staff/{staff}/toggle', [StaffController::class, 'toggle'])->name('staff.toggle');
+
     Route::get('schedules', [ScheduleController::class, 'index'])->name('schedules.index');
 });

@@ -25,7 +25,7 @@ class DashboardController extends Controller
             ->where('status', '!=', AppointmentStatus::Cancelled->value)
             ->count();
 
-        $activeStaffCount = User::where('role', 'staff')->count();
+        $activeStaffCount = User::where('role', 'staff')->where('is_active', true)->count();
         $servicesCount = Service::count();
 
         $startOfWeek = Carbon::now()->startOfWeek(Carbon::SATURDAY);
