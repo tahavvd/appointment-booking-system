@@ -106,7 +106,8 @@ $headers = [
                 @php
                 $workDays = $member->staffSchedules->pluck('day_of_week')->all();
                 $hours = $member->staffSchedules
-                ->map(fn ($s) => substr($s->start_time, 0, 5) . ' – ' . substr($s->end_time, 0, 5))
+                ->groupBy('day_of_week')
+                ->map(fn ($rows) => substr($rows->min('start_time'), 0, 5) . ' – ' . substr($rows->max('end_time'), 0, 5))
                 ->unique()->values();
                 $hoursText = $hours->count() === 0 ? null : ($hours->count() === 1 ? $hours[0] : 'Hours vary by day');
                 $headerClass = $member->is_active
@@ -199,7 +200,7 @@ $headers = [
                                 <span class="font-medium">{{ $hoursText }}</span>
                                 @else
                                 <span>No schedule yet ·
-                                    <a href="{{ route('admin.schedules.index') }}" class="font-medium text-teal-700 hover:text-teal-900 underline decoration-teal-300">set one</a>
+                                    <a href="{{ route('admin.schedules.index', ['staff' => $member->id]) }}" class="font-medium text-teal-700 hover:text-teal-900 underline decoration-teal-300">set one</a>
                                 </span>
                                 @endif
                             </div>
@@ -214,7 +215,7 @@ $headers = [
                             Edit
                         </button>
 
-                        <a href="{{ route('admin.schedules.index') }}"
+                        <a href="{{ route('admin.schedules.index', ['staff' => $member->id]) }}"
                             class="text-sm font-medium px-3 py-1.5 rounded-lg text-slate-700 hover:bg-slate-200 transition">
                             Schedule
                         </a>

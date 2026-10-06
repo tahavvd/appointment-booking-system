@@ -22,4 +22,5 @@ Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->grou
     Route::patch('staff/{staff}/toggle', [StaffController::class, 'toggle'])->name('staff.toggle');
 
     Route::get('schedules', [ScheduleController::class, 'index'])->name('schedules.index');
+    Route::put('schedules/{staff}', [ScheduleController::class, 'update'])->name('schedules.update');
 });

@@ -17,21 +17,22 @@ class AvailabilityService
      * Get every bookable start time for a staff member, on a given date,
      * for a service of the given duration.
      *
+     * A day can have several working windows (e.g. a lunch break splits
+     * the day into two), so each window is processed on its own.
+     *
      * @return Carbon[]
      */
     public function slotsFor(User $staff, Carbon $date, int $serviceDurationMinutes): array
     {
-        $schedule = $staff->staffSchedules()
+        $windows = $staff->staffSchedules()
             ->where('day_of_week', $date->dayOfWeek)
-            ->first();
+            ->orderBy('start_time')
+            ->get();
 
-        // No schedule row for this day at all = staff doesn't work this day.
-        if (! $schedule) {
+        // No schedule rows for this day at all = staff doesn't work this day.
+        if ($windows->isEmpty()) {
             return [];
         }
-
-        $windowStart = Carbon::parse($date->toDateString() . ' ' . $schedule->start_time);
-        $windowEnd = Carbon::parse($date->toDateString() . ' ' . $schedule->end_time);
 
         $busyRanges = $staff->staffAppointments()
             ->whereDate('start_time', $date->toDateString())
@@ -39,14 +40,25 @@ class AvailabilityService
             ->orderBy('start_time')
             ->get(['start_time', 'end_time']);
 
-        $freeGaps = $this->computeFreeGaps($windowStart, $windowEnd, $busyRanges);
+        $slots = [];
 
-        return $this->generateSlots($freeGaps, $serviceDurationMinutes);
+        foreach ($windows as $window) {
+            $windowStart = Carbon::parse($date->toDateString() . ' ' . $window->start_time);
+            $windowEnd = Carbon::parse($date->toDateString() . ' ' . $window->end_time);
+
+            $freeGaps = $this->computeFreeGaps($windowStart, $windowEnd, $busyRanges);
+
+            array_push($slots, ...$this->generateSlots($freeGaps, $serviceDurationMinutes));
+        }
+
+        return $slots;
     }
 
     /**
-     * Given a working window and a list of busy ranges inside it,
-     * return the free ranges left over.
+     * Given a working window and a list of busy ranges (sorted by start),
+     * return the free ranges left over. Busy ranges are clamped to the
+     * window, so an appointment outside the working hours can never
+     * create a free gap outside them.
      *
      * @return array<array{0: Carbon, 1: Carbon}>
      */
@@ -56,13 +68,21 @@ class AvailabilityService
         $cursor = $windowStart->copy();
 
         foreach ($busyRanges as $busy) {
+            // Entirely before the cursor: nothing to carve out.
+            if ($busy->end_time->lte($cursor)) {
+                continue;
+            }
+
+            // Starts after the window closes: nothing more can matter.
+            if ($busy->start_time->gte($windowEnd)) {
+                break;
+            }
+
             if ($busy->start_time->gt($cursor)) {
                 $gaps[] = [$cursor->copy(), $busy->start_time->copy()];
             }
 
-            if ($busy->end_time->gt($cursor)) {
-                $cursor = $busy->end_time->copy();
-            }
+            $cursor = $busy->end_time->copy();
         }
 
         if ($cursor->lt($windowEnd)) {
