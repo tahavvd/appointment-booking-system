@@ -14,7 +14,8 @@ Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->grou
     Route::patch('appointments/{appointment}/status', [AppointmentController::class, 'updateStatus'])
         ->name('appointments.update-status');
 
-    Route::get('services', [ServiceController::class, 'index'])->name('services.index');
+    Route::resource('services', ServiceController::class)->except(['show']);
+    Route::patch('services/{service}/toggle', [ServiceController::class, 'toggle'])->name('services.toggle');
 
     Route::get('staff', [StaffController::class, 'index'])->name('staff.index');
     Route::post('staff', [StaffController::class, 'store'])->name('staff.store');

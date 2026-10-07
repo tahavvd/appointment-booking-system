@@ -22,6 +22,7 @@ class Service extends Model
         'photo',
         'base_price',
         'duration_minutes',
+        'is_active',
     ];
 
     /**
@@ -34,6 +35,7 @@ class Service extends Model
         return [
             'base_price' => 'decimal:2',
             'duration_minutes' => 'integer',
+            'is_active' => 'boolean',
         ];
     }
 

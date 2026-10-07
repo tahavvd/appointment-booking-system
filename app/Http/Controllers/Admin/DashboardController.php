@@ -26,7 +26,7 @@ class DashboardController extends Controller
             ->count();
 
         $activeStaffCount = User::where('role', 'staff')->where('is_active', true)->count();
-        $servicesCount = Service::count();
+        $servicesCount = Service::where('is_active', true)->count();
 
         $startOfWeek = Carbon::now()->startOfWeek(Carbon::SATURDAY);
         $endOfWeek = Carbon::now()->endOfWeek(Carbon::SATURDAY);

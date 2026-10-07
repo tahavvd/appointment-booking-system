@@ -50,7 +50,9 @@ class BookingController extends Controller
             return redirect()->route('booking.start');
         }
 
-        $services = Service::with('addons')->get();
+        $services = Service::where('is_active', true)
+            ->with(['addons' => fn($q) => $q->where('is_active', true)])
+            ->get();
 
         return view('booking.service', ['services' => $services]);
     }
@@ -62,11 +64,12 @@ class BookingController extends Controller
         }
 
         $validated = $request->validate([
-            'service_id' => ['required', 'exists:services,id'],
+            'service_id' => ['required', Rule::exists('services', 'id')->where('is_active', true)],
             'addon_ids' => ['array'],
             'addon_ids.*' => [
                 Rule::exists('service_addons', 'id')
-                    ->where('service_id', $request->input('service_id')),
+                    ->where('service_id', $request->input('service_id'))
+                    ->where('is_active', true),
             ],
         ]);
 
@@ -129,9 +132,16 @@ class BookingController extends Controller
             return redirect()->route('booking.staff');
         }
 
-        $service = Service::findOrFail(session('booking.service_id'));
+        $service = Service::where('is_active', true)->find(session('booking.service_id'));
+
+        if (! $service) {
+            session()->forget(['booking.service_id', 'booking.addon_ids']);
+
+            return redirect()->route('booking.service');
+        }
+
         $addonIds = session('booking.addon_ids', []);
-        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+        $addons = ServiceAddon::whereIn('id', $addonIds)->where('is_active', true)->get();
 
         $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
         $totalPrice = $service->base_price + $addons->sum('extra_price');
@@ -173,8 +183,17 @@ class BookingController extends Controller
         $serviceId = session('booking.service_id');
         $addonIds = session('booking.addon_ids', []);
 
-        $service = Service::findOrFail($serviceId);
-        $addons = ServiceAddon::whereIn('id', $addonIds)->get();
+        $service = Service::where('is_active', true)->find($serviceId);
+
+        if (! $service) {
+            return redirect()->route('booking.service')
+                ->with('error', 'That service is no longer available.');
+        }
+
+        $addons = ServiceAddon::whereIn('id', $addonIds)
+            ->where('service_id', $service->id)
+            ->where('is_active', true)
+            ->get();
 
         $totalDuration = $service->duration_minutes + $addons->sum('extra_duration_minutes');
         $totalPrice = $service->base_price + $addons->sum('extra_price');
@@ -239,7 +258,7 @@ class BookingController extends Controller
                 ->with('error', 'That slot is no longer available — please pick another.');
         }
 
-        $appointment->addons()->attach($addonIds);
+        $appointment->addons()->attach($addons->pluck('id')->all());
 
         // Client identity persists across bookings — only the
         // choices specific to this one booking get cleared.

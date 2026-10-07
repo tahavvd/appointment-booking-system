@@ -21,6 +21,7 @@ class ServiceAddon extends Model
         'name',
         'extra_price',
         'extra_duration_minutes',
+        'is_active',
     ];
 
     /**
@@ -33,6 +34,7 @@ class ServiceAddon extends Model
         return [
             'extra_price' => 'decimal:2',
             'extra_duration_minutes' => 'integer',
+            'is_active' => 'boolean'
         ];
     }
 
