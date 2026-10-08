@@ -88,12 +88,3 @@ Seeded test accounts (see `database/seeders/DatabaseSeeder.php`):
 
 - Owner: `karim@salonyasmine.test` / `password`
 - Staff: `yasmine@salonyasmine.test` / `password`, `sara@salonyasmine.test` / `password`
-
-
-## Roadmap
-
-- [ ] Owner/staff dashboard (calendar overview, per-stylist schedule view)
-- [ ] Service/staff CRUD for the owner
-- [ ] No-show tracking and reporting
-- [ ] SMS/email appointment reminders
-- [ ] Per-date schedule exceptions (holidays, sick days)
