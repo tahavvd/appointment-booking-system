@@ -57,16 +57,6 @@ The project demonstrates practical full-stack development with Laravel, includin
 
 The interface uses a dark teal/cyan visual identity for the client booking experience and a lighter, information-focused workspace for salon administration.
 
-### 🖼️ Screenshots
-
-Recommended screenshots to add once captured from the running application:
-
-1. Client booking flow and service selection.
-2. Admin dashboard with appointments and revenue.
-3. Staff dashboard and appointment history.
-
-Save the screenshots in a folder such as `docs/screenshots/`, then embed them here using relative Markdown paths. Real application screenshots are not included because no screenshot files were supplied for this update.
-
 ## 🎯 The problem it solves
 
 Managing appointments through a notebook or messages can lead to overlapping bookings, unused time, inconsistent service prices, and confusion about staff availability.
@@ -473,9 +463,7 @@ The schedule days differ by staff member, so each person has their own weekly av
 
 The exact number of successfully created appointments can vary depending on the seeded staff schedules, services, and available slots.
 
-To explore the client appointment area, enter one of the seeded phone numbers in the booking flow at `/book`.
-
-> **Important privacy limitation:** Clients are identified by phone number only, without phone ownership verification. Anyone who knows or guesses a seeded phone number may be able to view or cancel that client's bookings. This is a documented limitation for the portfolio demo, not a suitable access-control design for real customer data.
+To explore the client appointment area, enter one of the seeded phone numbers in the booking flow at `/book`. See [Production and security notes](#-production-and-security-notes) for the limitation of phone-number-only client identification.
 
 ---
 
@@ -611,7 +599,28 @@ The seeder reads its source images from `database/seeders/assets/services/`. Res
 
 ### Service photos do not display in the browser
 
-Run `php artisan storage:link`, check that the image exists under `storage/app/public/services/`, and confirm that `APP_URL` matches the address used to open the application.
+First, check that the image exists under `storage/app/public/services/`, and confirm that `APP_URL` matches the address used to open the application.
+
+Create or repair the public storage link from inside the same environment where Laravel is running:
+
+```bash
+./vendor/bin/sail artisan storage:link
+```
+
+**Running with Sail?** If `storage:link` was previously run on the host instead of inside the container, `public/storage` may point to a host path that does not exist in the container. Inspect the link first:
+
+```bash
+./vendor/bin/sail exec laravel.test ls -ld public/storage
+```
+
+If it is an incorrect symlink, remove and recreate it inside the container:
+
+```bash
+./vendor/bin/sail exec laravel.test rm public/storage
+./vendor/bin/sail artisan storage:link
+```
+
+This assumes `public/storage` is a symlink, not a real directory containing files you need to keep. If your Compose service is not named `laravel.test`, replace it with the actual service name from `compose.yaml`.
 
 ### Database connection fails in Docker
 
