@@ -57,6 +57,7 @@ class DatabaseSeeder extends Seeder
 
         // Seed services and their photos.
         $this->seedServices();
+        $this->call(DemoAppointmentSeeder::class);
     }
 
     private function seedServices(): void
