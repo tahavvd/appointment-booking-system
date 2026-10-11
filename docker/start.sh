@@ -13,8 +13,9 @@ mkdir -p storage/app/public/services
 cp -r database/seeders/assets/services/. storage/app/public/services/
 chown -R www-data:www-data storage bootstrap/cache
 
-# Create any missing tables; does nothing if the schema is up to date
-php artisan migrate --force
+# Demo project: rebuild the database and re-seed it on every start, so
+# visitors always get clean data and the demo dates are relative to today.
+php artisan migrate:fresh --seed --force
 
 # Cache config/routes/views for speed
 php artisan config:cache
