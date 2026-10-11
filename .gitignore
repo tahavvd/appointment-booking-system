@@ -28,3 +28,6 @@ Thumbs.db
 /.env.testing
 .phpunit.cache/
 repomix-output.xml
+.env.neon
+.env.mysql
+.env.docker
