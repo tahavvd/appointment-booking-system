@@ -15,7 +15,9 @@ A Laravel-powered portfolio project for managing services, add-ons, staff, weekl
 
 [![View source on GitHub](https://img.shields.io/badge/GitHub-View%20source-181717?style=for-the-badge&logo=github)](https://github.com/tahavvd/appointment-booking-system)
 
-**Live demo:** Not deployed yet — follow the setup guide below to run the project locally.
+**Live demo:** [salon-booking-ggxo.onrender.com](https://salon-booking-ggxo.onrender.com)
+
+> The demo runs on free hosting. If nobody has visited for about 15 minutes it goes to sleep, so the first load can take around a minute. The demo data is reset every time it wakes up.
 
 ## 🔑 Demo logins
 
@@ -25,7 +27,7 @@ A Laravel-powered portfolio project for managing services, add-ons, staff, weekl
 | Staff | `aymen@gmail.com` | `password` |
 | Staff | `mohammed@gmail.com` | `password` |
 
-These are public development credentials created by the database seeder. Do not use them in production.
+These are public demo credentials created by the database seeder, and they work on the live demo. Anything you change there is temporary, because the demo database resets on every restart.
 
 ---
 
@@ -39,6 +41,7 @@ These are public development credentials created by the database seeder. Do not 
 - [Project structure](#️-project-structure)
 - [Requirements](#️-requirements)
 - [Installation and setup](#-installation-and-setup)
+- [Deployment](#️-deployment)
 - [Demo data and test accounts](#-demo-data-and-test-accounts)
 - [Service photo handling](#️-service-photo-handling)
 - [Main routes](#️-main-routes)
@@ -140,7 +143,7 @@ A slot displayed in the browser can become unavailable before the client confirm
 
 The booking controller revalidates the submitted selection against the availability rules and performs the conflict check and appointment creation inside a database transaction with row locking. This is intended to reduce the risk of overlapping bookings for the same staff member.
 
-**Database note:** transaction and row-lock behaviour depends on the database engine. Use a transactional database such as MySQL/InnoDB for realistic concurrency testing. SQLite is convenient for lightweight local development but does not reproduce every production locking behaviour.
+**Database note:** transaction and row-lock behaviour depends on the database engine. Use a transactional database such as MySQL/InnoDB or PostgreSQL for realistic concurrency testing. SQLite is convenient for lightweight local development but does not reproduce every production locking behaviour.
 
 ### 3. Prices and durations come from database records
 
@@ -197,8 +200,10 @@ These measures are useful foundations, not a claim that the application has unde
 | **Tailwind CSS** | Responsive styling and interface layout. |
 | **Alpine.js** | Lightweight browser interactions, including dynamic form rows and UI state. |
 | **Vite** | Frontend asset development and production builds. |
-| **MySQL / SQLite** | Relational database options supported by the Laravel configuration. MySQL is recommended for concurrency testing. |
+| **MySQL / PostgreSQL** | MySQL runs locally through Sail; the live demo runs on PostgreSQL (Neon). The application code uses no database-specific SQL. |
 | **Laravel Sail / Docker Compose** | Container-based local development. |
+| **Docker** | Multi-stage production image (Composer, Vite build, PHP 8.3 + Apache). |
+| **Render + Neon** | Free-tier hosting for the web app and the PostgreSQL database. |
 | **PHPUnit** | Test runner configured for the project. |
 
 No separate SPA framework is required: application pages are rendered with Blade, while Alpine.js provides small interactive behaviours.
@@ -208,6 +213,10 @@ No separate SPA framework is required: application pages are rendered with Blade
 The following are the main places to look when exploring or extending the codebase:
 
 ```text
+Dockerfile                          # Production image used by Render
+docker/
+└── start.sh                        # Container startup: port, photos, reset + seed, caches
+
 app/
 ├── Enums/
 │   └── AppointmentStatus.php       # Appointment lifecycle states
@@ -435,11 +444,47 @@ For a production-style frontend build, run `npm run build` and configure your we
 
 ---
 
+## ☁️ Deployment
+
+The live demo uses free tiers: **Render** runs the app as a Docker web service (Frankfurt region) and **Neon** hosts the PostgreSQL database.
+
+**How it works**
+
+- `Dockerfile` builds the image in three stages: Composer installs production packages, Vite builds the frontend, and the final PHP 8.3 + Apache image includes the `pdo_pgsql` extension.
+- `docker/start.sh` runs on every container start. It binds Apache to Render's `$PORT`, copies the demo photos into storage (the disk is wiped on each restart), runs `migrate:fresh --seed --force`, and caches config, routes and views.
+- `bootstrap/app.php` trusts the proxy in front of the app so generated URLs use HTTPS.
+- Render's health check path is `/up`.
+
+**Environment variables set on Render**
+
+```text
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://<your-service>.onrender.com
+APP_KEY=<generated key>
+DB_CONNECTION=pgsql
+DB_URL=<Neon connection string>
+SESSION_DRIVER=database
+CACHE_STORE=database
+QUEUE_CONNECTION=database
+LOG_CHANNEL=stderr
+```
+
+> **Warning:** `start.sh` wipes and reseeds the database on every start. That suits a throwaway demo, but never use it with real data.
+
+**Building the production image locally**
+
+```bash
+docker build -t salon-test .
+```
+
+---
+
 ## 🧪 Demo data and test accounts
 
 `database/seeders/DatabaseSeeder.php` creates the demo admin and staff users, schedules, services, and service add-ons. It also calls `DemoAppointmentSeeder.php` to add appointment examples.
 
-The demo login credentials are listed at the top of this README for quick access. They are public development credentials and must not be reused in a real deployment.
+The demo login credentials are listed at the top of this README for quick access. They are public demo credentials and must not be reused in a real deployment. On the live demo, the data is re-seeded each time the service starts.
 
 ### Seeded services
 
@@ -593,6 +638,10 @@ Use the Sail prefix for Artisan, npm, and other commands that need to run inside
 
 ## 🔧 Troubleshooting
 
+### The live demo is slow or shows a loading screen
+
+Free Render services sleep after about 15 minutes without traffic. The first request wakes the app and re-seeds the database, which can take a minute. Reload after a short wait.
+
 ### Seeder fails with “Missing service photo”
 
 The seeder reads its source images from `database/seeders/assets/services/`. Restore the required image there. A copy under `storage/app/public` does not replace the seeder source asset.
@@ -652,6 +701,7 @@ Before deploying it for real customers:
 - Set `APP_ENV=production` and `APP_DEBUG=false`.
 - Generate and protect a unique `APP_KEY`; never commit `.env`.
 - Replace demo passwords and remove or disable demo accounts.
+- Remove the reset-and-reseed step from `docker/start.sh`.
 - Configure production database credentials and verify transaction/locking behaviour on the actual database engine.
 - Serve the application over HTTPS.
 - Ensure `storage/` and `bootstrap/cache/` have appropriate permissions.
@@ -659,7 +709,7 @@ Before deploying it for real customers:
 - Configure a real mail/SMS provider only if those features are implemented and credentials are available.
 - Run automated tests and conduct a separate security review before handling real customer data.
 
-> **Caution:** Never use the seeded demo accounts or development environment settings on a publicly accessible production deployment.
+> **Caution:** The live demo intentionally exposes demo credentials and resets its database on every start. Do not reuse that setup, or any of those passwords, for real customer data.
 
 ## 💡 Possible future improvements
 
